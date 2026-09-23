@@ -1,0 +1,8 @@
+{
+  "name": "Remix Dr.Gamal",
+  "description": "Imported from GitHub: ahmdmahrzynmsbah-cloud/Dr.Gamal",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

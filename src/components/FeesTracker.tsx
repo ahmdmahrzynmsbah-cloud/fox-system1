@@ -1,0 +1,2288 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect, useMemo } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { Student, FeePayment, ClassRoom } from '../types';
+import { samsDb, addAuditLog } from '../utils/db';
+import {
+  checkFeeDueDatesBackgroundService,
+  getWhatsAppReminderUrl,
+  generateWhatsAppReminderText,
+  formatEgyptianPhoneForWhatsApp
+} from '../utils/feeReminderService';
+import { useSamsDbSync } from '../hooks/useSamsDbSync';
+import { appendSystemSignature } from '../utils/phoneUtils';
+import {
+  calculateStudentSubscription,
+  StudentSubscriptionOverview,
+  StudentCycle,
+  formatShortDateArabic
+} from '../utils/subscriptionUtils';
+
+import {
+  Check, 
+  ShieldAlert, 
+  CreditCard, 
+  Receipt, 
+  Award, 
+  Printer, 
+  Plus, 
+  AlertCircle, 
+  RefreshCw, 
+  Search, 
+  Calendar, 
+  DollarSign, 
+  CheckCircle2, 
+  XCircle, 
+  Send, 
+  Trash2,
+  FileSpreadsheet,
+  Coins,
+  ArrowLeftRight,
+  TrendingUp,
+  UserCheck,
+  MessageSquare,
+  Bot,
+  Copy,
+  ExternalLink,
+  BellRing
+  
+  , X
+} from 'lucide-react';
+
+
+const MONTHS_LIST = [
+  'يوليو 2026',
+  'أغسطس 2026',
+  'سبتمبر 2026',
+  'أكتوبر 2026',
+  'نوفمبر 2026',
+  'ديسمبر 2026',
+  'يناير 2027',
+  'فبراير 2027',
+  'مارس 2027',
+  'أبريل 2027',
+  'مايو 2027',
+  'يونيو 2027'
+];
+
+const playSuccessBeep = () => {
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    gain.gain.setValueAtTime(0.08, ctx.currentTime);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.12);
+  } catch (e) {
+    console.log(e);
+  }
+};
+
+const playCashRegisterSound = () => {
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    // Chime 1
+    const osc1 = ctx.createOscillator();
+    const gain1 = ctx.createGain();
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(1200, ctx.currentTime);
+    gain1.gain.setValueAtTime(0.05, ctx.currentTime);
+    osc1.connect(gain1);
+    gain1.connect(ctx.destination);
+    osc1.start();
+    osc1.stop(ctx.currentTime + 0.08);
+
+    // Chime 2
+    setTimeout(() => {
+      const osc2 = ctx.createOscillator();
+      const gain2 = ctx.createGain();
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(1500, ctx.currentTime);
+      gain2.gain.setValueAtTime(0.05, ctx.currentTime);
+      osc2.connect(gain2);
+      gain2.connect(ctx.destination);
+      osc2.start();
+      osc2.stop(ctx.currentTime + 0.15);
+    }, 80);
+  } catch (e) {
+    console.log(e);
+  }
+};
+
+export default function FeesTracker() {
+  const [activeTab, setActiveTab] = useState<'subscriptions' | 'all_receipts'>('subscriptions');
+  const [payments, setPayments] = useState<FeePayment[]>([]);
+  const [showPrintModal, setShowPrintModal] = useState(false);
+  const [printTargetReceipt, setPrintTargetReceipt] = useState<FeePayment | null>(null);
+  const [showPrintReportModal, setShowPrintReportModal] = useState(false);
+
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processingProgress, setProcessingProgress] = useState(0);
+  const [processingText, setProcessingText] = useState('');
+
+  const handleProcessAction = (text: string, onComplete: () => void) => {
+    setIsProcessing(true);
+    setProcessingProgress(0);
+    setProcessingText(text);
+    
+    let progress = 0;
+    const interval = setInterval(() => {
+      progress += Math.floor(Math.random() * 25) + 15;
+      if (progress >= 100) {
+        progress = 100;
+        setProcessingProgress(progress);
+        clearInterval(interval);
+        
+        setTimeout(() => {
+          setIsProcessing(false);
+          setProcessingProgress(0);
+          setTimeout(() => {
+            onComplete();
+          }, 150);
+        }, 200);
+      } else {
+        setProcessingProgress(progress);
+      }
+    }, 80);
+  };
+  const [students, setStudents] = useState<Student[]>([]);
+  const [classes, setClasses] = useState<ClassRoom[]>([]);
+  const [paymentToDelete, setPaymentToDelete] = useState<FeePayment | null>(null);
+  
+  // Selection filters
+  const [selectedGrade, setSelectedGrade] = useState<string>('');
+  const [selectedClass, setSelectedClass] = useState<string>('all');
+  const [selectedMonth, setSelectedMonth] = useState<string>('سبتمبر 2026');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [subFilter, setSubFilter] = useState<'all' | 'paid' | 'partial' | 'due' | 'new'>('all');
+  
+  // Quick payment modal states
+  const [showQuickPayModal, setShowQuickPayModal] = useState(false);
+  const [quickPayStudent, setQuickPayStudent] = useState<Student | null>(null);
+  const [quickPayTargetCycle, setQuickPayTargetCycle] = useState<StudentCycle | null>(null);
+  const [quickPayAmount, setQuickPayAmount] = useState<number>(250);
+  const [quickPayMethod, setQuickPayMethod] = useState<FeePayment['payment_method']>('cash');
+  const [quickPayNotify, setQuickPayNotify] = useState<boolean>(true);
+
+  // Direct WhatsApp Modal states
+  const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
+  const [whatsAppStudent, setWhatsAppStudent] = useState<Student | null>(null);
+  const [whatsAppMessage, setWhatsAppMessage] = useState<string>('');
+  const [copiedToast, setCopiedToast] = useState(false);
+
+  // Background Service stats state
+  const [bgServiceStats, setBgServiceStats] = useState<{
+    lastRun: string;
+    unpaidCount: number;
+    newNotisCount: number;
+  } | null>(null);
+
+  const runBackgroundCheck = () => {
+    const res = checkFeeDueDatesBackgroundService(selectedMonth);
+    const nowStr = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setBgServiceStats({
+      lastRun: nowStr,
+      unpaidCount: res.unpaidCount,
+      newNotisCount: res.newNotisCount
+    });
+    if (res.newNotisCount > 0) {
+      setSuccessInfo(`تم تشغيل خدمة الخلفية: رصد ${res.unpaidCount} طالب غير مسدد، وتم إنشاء ${res.newNotisCount} إشعار استحقاق جديد تلقائياً 🔔`);
+    } else {
+      setSuccessInfo(`فحص الخلفية التلقائي لشهر (${selectedMonth}): جميع التنبيهات محدّثة ولا يوجد إشعارات مكررة. ✨`);
+    }
+    playSuccessBeep();
+  };
+
+  // General payment form states (Tab 2)
+  const [showGeneralPayForm, setShowGeneralPayForm] = useState(false);
+  const [generalPayData, setGeneralPayData] = useState({
+    student_id: '',
+    amount: 250,
+    payment_method: 'cash' as FeePayment['payment_method'],
+    category: 'tuition' as FeePayment['category'],
+    term: 'first_term' as FeePayment['term'],
+    month: 'يوليو 2026'
+  });
+
+  // Monthly group fees rate config
+  const [gradeFees, setGradeFees] = useState<Record<string, number>>(() => {
+    const saved = localStorage.getItem('sams_grade_monthly_fees');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        // ignore
+      }
+    }
+    return {
+      'الأول الإعدادي': 150,
+      'الثاني الإعدادي': 150,
+      'الثالث الإعدادي': 150,
+      'الأول الثانوي': 200,
+      'الثاني الثانوي': 250,
+      'الثالث الثانوي': 300
+    };
+  });
+
+  // Feedback states
+  const [successInfo, setSuccessInfo] = useState('');
+  const [errorInfo, setErrorInfo] = useState('');
+  const [selectedReceipt, setSelectedReceipt] = useState<FeePayment | null>(null);
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  useSamsDbSync(() => {
+    loadData();
+  });
+
+  const loadData = () => {
+    const allPayments = samsDb.getFees();
+    const allStudents = samsDb.getVisibleStudents();
+    const allClasses = samsDb.getVisibleClasses();
+    
+    setPayments(allPayments);
+    setStudents(allStudents);
+    setClasses(allClasses);
+
+    if (allClasses.length > 0) {
+      const grades = Array.from(new Set(allClasses.map(c => c.grade_level)));
+      if (!selectedGrade && grades.length > 0) {
+        setSelectedGrade(grades[0]);
+        setSelectedClass('all');
+      }
+    }
+  };
+
+  // Auto-clear success/error alerts
+  useEffect(() => {
+    if (successInfo) {
+      const timer = setTimeout(() => setSuccessInfo(''), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [successInfo]);
+
+  useEffect(() => {
+    if (errorInfo) {
+      const timer = setTimeout(() => setErrorInfo(''), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [errorInfo]);
+
+  // Save updated group fee rates
+  const handleSaveGradeFee = (gradeLevel: string, amount: number) => {
+    const updated = { ...gradeFees, [gradeLevel]: amount };
+    setGradeFees(updated);
+    samsDb.saveGradeMonthlyFees(updated);
+    setSuccessInfo(`تم تحديث قيمة اشتراك الصف بنجاح لتصبح: ${amount} ج.م`);
+    playSuccessBeep();
+  };
+
+  // Open quick payment modal with precise cycle and remaining amount
+  const openQuickPayForStudent = (student: Student, targetCycle?: StudentCycle, customAmount?: number) => {
+    const activeFee = gradeFees[student.grade_level] || gradeFees[selectedGrade] || 250;
+    const sub = calculateStudentSubscription(student, payments, activeFee);
+    const cycleToPay = targetCycle || sub.currentCycle;
+    
+    setQuickPayStudent(student);
+    setQuickPayTargetCycle(cycleToPay);
+
+    if (customAmount !== undefined) {
+      setQuickPayAmount(customAmount);
+    } else if (cycleToPay.remainingAmount > 0) {
+      setQuickPayAmount(cycleToPay.remainingAmount);
+    } else {
+      setQuickPayAmount(activeFee);
+    }
+
+    setShowQuickPayModal(true);
+  };
+
+  // Open WhatsApp reminder with detailed debt breakdown
+  const openWhatsAppForStudent = (student: Student) => {
+    const activeFee = gradeFees[student.grade_level] || gradeFees[selectedGrade] || 250;
+    const sub = calculateStudentSubscription(student, payments, activeFee);
+    setWhatsAppStudent(student);
+    const defaultMsg = generateWhatsAppReminderText(
+      student.name,
+      student.parent_name,
+      sub.currentCycle.label,
+      activeFee,
+      student.grade_level,
+      {
+        remainingAmount: sub.currentCycle.remainingAmount,
+        amountPaid: sub.currentCycle.amountPaid,
+        periodLabel: sub.currentCycle.periodLabel,
+        nextDueDate: sub.nextDueDateFormatted
+      }
+    );
+    setWhatsAppMessage(defaultMsg);
+    setShowWhatsAppModal(true);
+  };
+
+  // Open WhatsApp confirmation receipt
+  const openWhatsAppReceipt = (student: Student, payment: FeePayment) => {
+    const activeFee = gradeFees[student.grade_level] || gradeFees[selectedGrade] || 250;
+    const sub = calculateStudentSubscription(student, payments, activeFee);
+    setWhatsAppStudent(student);
+    const isAlsafa = typeof window !== 'undefined' && localStorage.getItem('sams_active_system') === 'alsafa';
+    const centerTitle = isAlsafa ? 'سيستم الصفا للمواد الشرعية' : 'سنتر الدكتور في اللغة العربية';
+    
+    const remainingText = sub.currentCycle.remainingAmount > 0
+      ? `\nالمبلغ المتبقي لاستكمال الاشتراك: *${sub.currentCycle.remainingAmount} ج.م*.`
+      : `\nتم اكتمال سداد اشتراك هذا الشهر بالكامل ✓ وسيبدأ احتساب الشهر الجديد عند حلول موعده (${sub.nextDueDateFormatted}).`;
+
+    const confirmMsg = appendSystemSignature(`السلام عليكم ورحمة الله وبركاته 🌸\nالسيد ولي أمر الطالب/ة: *${student.name}* (${student.parent_name || 'المحترم'})\n\nتحية طيبة وبعد من إدارة *${centerTitle}* 🏛️\nنحيطكم علماً بأنه تم بحمد الله استلام وتسجيل دفعة اشتراك بقيمة *${payment.amount} ج.م* عن فترة (*${payment.period_start ? `${payment.period_start} إلى ${payment.period_end}` : sub.currentCycle.periodLabel}*). رقم الإيصال: *${payment.receipt_number}*.${remainingText}\n\nشاكرين لكم حسن التعاون والالتزام! 🌺`);
+    setWhatsAppMessage(confirmMsg);
+    setShowWhatsAppModal(true);
+  };
+
+  // Quick Pay Submit Handler
+  const handleQuickPaySubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickPayStudent) return;
+
+    const activeFee = gradeFees[quickPayStudent.grade_level] || gradeFees[selectedGrade] || 250;
+    const sub = calculateStudentSubscription(quickPayStudent, payments, activeFee);
+    const targetCycle = quickPayTargetCycle || sub.currentCycle;
+    const amount = Number(quickPayAmount);
+
+    if (amount <= 0) {
+      setErrorInfo('يرجى إدخال مبلغ تحصيل صحيح أكبر من صفر.');
+      return;
+    }
+
+    const remainingBefore = targetCycle.remainingAmount;
+    const remainingAfter = Math.max(0, remainingBefore - amount);
+    const isFullSettlement = remainingAfter === 0;
+    const monthLabel = `${targetCycle.label} (${targetCycle.periodLabel})`;
+
+    // Register payment
+    const newPayment = samsDb.addPayment({
+      student_id: quickPayStudent.id,
+      amount: amount,
+      payment_date: new Date().toISOString().split('T')[0],
+      payment_method: quickPayMethod,
+      term: 'first_term',
+      category: 'tuition',
+      month: monthLabel,
+      cycle_number: targetCycle.cycleNumber,
+      period_start: targetCycle.startDateStr,
+      period_end: targetCycle.endDateStr,
+      remaining_after: remainingAfter,
+      notes: isFullSettlement 
+        ? `اكتمال سداد ${targetCycle.label}` 
+        : `سداد جزئي لـ ${targetCycle.label} - متبقي ${remainingAfter} ج.م`
+    });
+
+    // Simulated SMS message to parent
+    if (quickPayNotify) {
+      samsDb.addNotification({
+        title: `تأكيد استلام اشتراك: ${quickPayStudent.name}`,
+        message: `تم بحمد الله استلام دفعة بقيمة ${amount} ج.م لاشتراك الطالب ${quickPayStudent.name} عن فترة (${targetCycle.periodLabel}). ${
+          isFullSettlement 
+            ? 'تم اكتمال سداد هذا الشهر بنجاح، وسيبدأ احتساب الشهر الجديد عند حلول موعده! ✓' 
+            : `المبلغ المتبقي المستحق: ${remainingAfter} ج.م ⚠️`
+        } إيصال سداد رقم: ${newPayment.receipt_number}. شكراً لكم.`,
+        category: 'sms',
+        recipient_type: 'specific',
+        recipient_id: quickPayStudent.id
+      });
+    }
+
+    playCashRegisterSound();
+    if (isFullSettlement) {
+      setSuccessInfo(`تم اكتمال سداد ${targetCycle.label} للطالب ${quickPayStudent.name} بنجاح! وتم ترحيل الشهر الجديد تلقائياً ✨. رقم الإيصال: ${newPayment.receipt_number}`);
+    } else {
+      setSuccessInfo(`تم تسجيل دفعة بقيمة ${amount} ج.م للطالب ${quickPayStudent.name} بنجاح (المتبقي: ${remainingAfter} ج.م). رقم الإيصال: ${newPayment.receipt_number}`);
+    }
+    
+    // Autoopen receipt for printing
+    setSelectedReceipt(newPayment);
+    setShowQuickPayModal(false);
+    loadData();
+  };
+
+  // General payment form submit
+  const handleGeneralPaySubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!generalPayData.student_id) {
+      setErrorInfo('يرجى اختيار الطالب أولاً لإتمام المعاملة المالية.');
+      return;
+    }
+
+    const newPayment = samsDb.addPayment({
+      student_id: generalPayData.student_id,
+      amount: Number(generalPayData.amount),
+      payment_date: new Date().toISOString().split('T')[0],
+      payment_method: generalPayData.payment_method,
+      category: generalPayData.category,
+      term: generalPayData.term,
+      month: generalPayData.category === 'tuition' ? generalPayData.month : undefined
+    });
+
+    playCashRegisterSound();
+    setSuccessInfo(`تم تسجيل العملية بنجاح برقم إيصال: ${newPayment.receipt_number}`);
+    setShowGeneralPayForm(false);
+    setSelectedReceipt(newPayment);
+    
+    // Reset general pay data
+    setGeneralPayData({
+      student_id: '',
+      amount: 250,
+      payment_method: 'cash',
+      category: 'tuition',
+      term: 'first_term',
+      month: selectedMonth
+    });
+
+    loadData();
+  };
+
+  // Delete payment handler
+  const confirmDeletePayment = () => {
+    if (!paymentToDelete) return;
+
+    const receiptNumber = paymentToDelete.receipt_number;
+    samsDb.deleteFeePayment(paymentToDelete.id);
+    
+    setSuccessInfo(`تم إلغاء وحذف الإيصال رقم ${receiptNumber} بنجاح.`);
+    setPaymentToDelete(null);
+    loadData();
+  };
+
+  // Active monthly fee for selected grade
+  const activeGradeMonthlyFee = gradeFees[selectedGrade] || 250;
+
+  // Students in selected class
+  const classStudents = useMemo(() => {
+    return students.filter(s => {
+      const studentClass = classes.find(c => c.id === s.class_id);
+      if (selectedClass !== 'all') return s.class_id === selectedClass;
+      return studentClass?.grade_level === selectedGrade;
+    });
+  }, [students, classes, selectedClass, selectedGrade]);
+
+  // Precompute dynamic subscription overview for each student based on their start/registration date
+  const studentSubMap = useMemo(() => {
+    const map = new Map<string, StudentSubscriptionOverview>();
+    classStudents.forEach(st => {
+      const fee = gradeFees[st.grade_level] || activeGradeMonthlyFee;
+      map.set(st.id, calculateStudentSubscription(st, payments, fee));
+    });
+    return map;
+  }, [classStudents, payments, gradeFees, activeGradeMonthlyFee]);
+
+  // Filter students based on search query AND subFilter tab
+  const filteredClassStudents = useMemo(() => {
+    return classStudents.filter(s => {
+      const matchesSearch = 
+        s.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+        s.registration_id.includes(searchQuery) ||
+        (s.phone && s.phone.includes(searchQuery)) ||
+        (s.parent_phone && s.parent_phone.includes(searchQuery));
+
+      if (!matchesSearch) return false;
+
+      const sub = studentSubMap.get(s.id);
+      if (!sub) return true;
+
+      if (subFilter === 'paid') {
+        return sub.currentCycle.status === 'paid';
+      }
+      if (subFilter === 'partial') {
+        return sub.currentCycle.status === 'partial' || (sub.totalRemainingDebt > 0 && sub.totalPaid > 0);
+      }
+      if (subFilter === 'due') {
+        return sub.currentCycle.status === 'unpaid' || sub.currentCycle.isOverdue || sub.overallStatus === 'overdue';
+      }
+      if (subFilter === 'new') {
+        return sub.daysSinceRegistration <= 7;
+      }
+      return true;
+    });
+  }, [classStudents, searchQuery, subFilter, studentSubMap]);
+
+  // Comprehensive analytics based on registration-date cycles and remaining debts
+  const fullyPaidStudentsCount = useMemo(() => {
+    return classStudents.filter(s => {
+      const sub = studentSubMap.get(s.id);
+      return sub?.currentCycle.status === 'paid';
+    }).length;
+  }, [classStudents, studentSubMap]);
+
+  const partialPaidStudentsCount = useMemo(() => {
+    return classStudents.filter(s => {
+      const sub = studentSubMap.get(s.id);
+      return sub?.currentCycle.status === 'partial' || (sub && sub.totalRemainingDebt > 0 && sub.totalPaid > 0);
+    }).length;
+  }, [classStudents, studentSubMap]);
+
+  const dueOrOverdueStudentsCount = useMemo(() => {
+    return classStudents.filter(s => {
+      const sub = studentSubMap.get(s.id);
+      return sub?.currentCycle.status === 'unpaid' || sub?.currentCycle.isOverdue || sub?.overallStatus === 'overdue';
+    }).length;
+  }, [classStudents, studentSubMap]);
+
+  const newStudentsCount = useMemo(() => {
+    return classStudents.filter(s => {
+      const sub = studentSubMap.get(s.id);
+      return (sub?.daysSinceRegistration || 0) <= 7;
+    }).length;
+  }, [classStudents, studentSubMap]);
+
+  const totalCollectedSum = useMemo(() => {
+    return classStudents.reduce((sum, s) => {
+      const sub = studentSubMap.get(s.id);
+      return sum + (sub?.totalPaid || 0);
+    }, 0);
+  }, [classStudents, studentSubMap]);
+
+  const totalRemainingDebtSum = useMemo(() => {
+    return classStudents.reduce((sum, s) => {
+      const sub = studentSubMap.get(s.id);
+      return sum + (sub?.totalRemainingDebt || 0);
+    }, 0);
+  }, [classStudents, studentSubMap]);
+
+  const totalCollectedForMonth = payments
+    .filter(p => {
+      const student = students.find(s => s.id === p.student_id);
+      if (!student) return false;
+      const studentClass = classes.find(c => c.id === student.class_id);
+      if (selectedClass !== 'all') {
+        if (student.class_id !== selectedClass) return false;
+      } else {
+        if (studentClass?.grade_level !== selectedGrade) return false;
+      }
+      return p.category === 'tuition' && p.month === selectedMonth;
+    })
+    .reduce((sum, item) => sum + item.amount, 0);
+
+  const expectedRevenue = classStudents.length * activeGradeMonthlyFee;
+  const collectionPercentage = expectedRevenue > 0 ? Math.round((totalCollectedSum / expectedRevenue) * 100) : 0;
+
+  // Calculate dynamic history timeline (rolling 4 months ending with selected month)
+  const currentMonthIdx = MONTHS_LIST.indexOf(selectedMonth);
+  const timelineMonths = MONTHS_LIST.slice(Math.max(0, currentMonthIdx - 3), currentMonthIdx + 1);
+
+
+  if (showPrintReportModal) {
+    return (
+      <div className="bg-white dark:bg-slate-800 p-4 sm:p-6 rounded-3xl animate-fade-in" dir="rtl">
+        <div className="flex justify-between items-center mb-6 no-print border-b border-slate-100 dark:border-slate-700 pb-4">
+          <button
+            onClick={() => setShowPrintReportModal(false)}
+            className="p-2.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-200 rounded-xl flex items-center gap-2 font-bold text-sm cursor-pointer"
+          >
+            <ArrowLeftRight className="w-5 h-5" />
+            رجوع
+          </button>
+          <button
+            onClick={() => window.print()}
+            className="px-6 py-2.5 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white rounded-xl font-bold flex items-center gap-2 shadow-sm cursor-pointer"
+          >
+            <Printer className="w-5 h-5" />
+            طباعة الكشف
+          </button>
+        </div>
+
+        {/* Printable Area */}
+        <div className="print-area max-w-5xl mx-auto p-4 bg-white text-black border border-slate-200" dir="rtl">
+          <div className="text-center mb-6 border-b-2 border-slate-800 pb-4">
+            <h1 className="text-xl sm:text-2xl font-black text-slate-900">كشف سداد ومتبقيات الاشتراكات الشهرية</h1>
+            <p className="text-sm font-bold text-slate-600 mt-1">
+              احتساب ذكي من تاريخ تسجيل كل طالب • تقرير شهر {selectedMonth}
+            </p>
+          </div>
+          
+          <div className="flex justify-between items-center mb-4 flex-wrap gap-2">
+            <div className="text-xl font-black text-slate-800">
+              {typeof window !== 'undefined' && localStorage.getItem('sams_active_system') === 'alsafa' ? 'سيستم الصفا للمواد الشرعية' : (localStorage.getItem('sams_center_name') || 'الدكتور في اللغة العربية')}
+            </div>
+            <div className="text-sm font-bold bg-slate-100 px-4 py-2 rounded-xl border border-slate-300 inline-block">
+              المجموعة: {classes.find(c => c.id === selectedClass)?.name || selectedGrade} • إجمالي الطلاب: {filteredClassStudents.length}
+            </div>
+          </div>
+
+          <table className="w-full text-right border-collapse text-xs" dir="rtl">
+            <thead>
+              <tr className="bg-slate-100 border-b-2 border-slate-800">
+                <th className="py-2.5 px-3 font-bold text-slate-900 border border-slate-300">م</th>
+                <th className="py-2.5 px-3 font-bold text-slate-900 border border-slate-300">اسم الطالب</th>
+                <th className="py-2.5 px-3 font-bold text-slate-900 border border-slate-300">كود الطالب</th>
+                <th className="py-2.5 px-3 font-bold text-slate-900 border border-slate-300">تاريخ التسجيل</th>
+                <th className="py-2.5 px-3 font-bold text-slate-900 border border-slate-300">فترة الدورة الحالية</th>
+                <th className="py-2.5 px-3 font-bold text-slate-900 border border-slate-300 text-center">المطلوب</th>
+                <th className="py-2.5 px-3 font-bold text-slate-900 border border-slate-300 text-center">المدفوع</th>
+                <th className="py-2.5 px-3 font-bold text-slate-900 border border-slate-300 text-center">المتبقي</th>
+                <th className="py-2.5 px-3 font-bold text-slate-900 border border-slate-300 text-center">حالة السداد</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-300">
+              {filteredClassStudents.length > 0 ? (
+                filteredClassStudents.map((student, idx) => {
+                  const sub = studentSubMap.get(student.id) || calculateStudentSubscription(student, payments, activeGradeMonthlyFee);
+                  const cycle = sub.currentCycle;
+                  const isPaid = cycle.status === 'paid';
+                  const isPartial = cycle.status === 'partial';
+
+                  return (
+                    <tr key={student.id}>
+                      <td className="py-2 px-3 font-bold text-slate-900 border border-slate-300">{idx + 1}</td>
+                      <td className="py-2 px-3 font-bold text-slate-900 border border-slate-300">{student.name}</td>
+                      <td className="py-2 px-3 text-slate-700 font-mono border border-slate-300">{student.registration_id}</td>
+                      <td className="py-2 px-3 text-slate-700 border border-slate-300">
+                        {sub.startDateFormatted}
+                        <span className="block text-[10px] text-slate-500">{sub.registrationText}</span>
+                      </td>
+                      <td className="py-2 px-3 text-slate-700 border border-slate-300">
+                        {cycle.label}
+                        <span className="block text-[10px] text-slate-500 font-mono">{cycle.periodLabel}</span>
+                      </td>
+                      <td className="py-2 px-3 font-bold text-slate-900 text-center border border-slate-300">{cycle.feeRequired} ج.م</td>
+                      <td className="py-2 px-3 font-bold text-emerald-700 text-center border border-slate-300">{cycle.amountPaid} ج.م</td>
+                      <td className="py-2 px-3 font-bold text-center border border-slate-300">
+                        {cycle.remainingAmount > 0 ? (
+                          <span className="text-rose-700 font-black">{cycle.remainingAmount} ج.م</span>
+                        ) : (
+                          <span className="text-emerald-700">0 ج.م</span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 border border-slate-300 text-center">
+                        {isPaid ? (
+                          <span className="inline-block px-2 py-0.5 bg-emerald-100 text-emerald-900 font-black rounded-md text-[10px]">مسدد بالكامل ✓</span>
+                        ) : isPartial ? (
+                          <span className="inline-block px-2 py-0.5 bg-amber-100 text-amber-900 font-black rounded-md text-[10px]">سداد جزئي ⚠️</span>
+                        ) : (
+                          <span className="inline-block px-2 py-0.5 bg-rose-100 text-rose-900 font-black rounded-md text-[10px]">مستحق / لم يسدد ✗</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
+              ) : (
+                <tr>
+                  <td colSpan={9} className="py-8 text-center text-slate-500 font-bold border border-slate-300">
+                    لا يوجد طلاب في هذه المجموعة
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+
+          <div className="mt-8 flex justify-between border-t border-slate-300 pt-4" dir="rtl">
+            <div className="text-xs font-bold text-slate-700">إجمالي المحصل: {totalCollectedSum} ج.م</div>
+            <div className="text-xs font-bold text-rose-700">إجمالي المتبقيات المعلقة: {totalRemainingDebtSum} ج.م</div>
+            <div className="text-xs font-bold text-slate-700">توقيع السكرتارية: ........................</div>
+            <div className="text-xs font-bold text-slate-700">توقيع الإدارة: ........................</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (showPrintModal && printTargetReceipt) {
+    const studentInfo = students.find(s => s.id === printTargetReceipt.student_id);
+    const centerName = localStorage.getItem('sams_center_name') || 'المركز التعليمي SAMS';
+    const centerPhone = localStorage.getItem('sams_center_phone') || '';
+    
+    return (
+      <div className="bg-white dark:bg-slate-800 p-4 sm:p-6 rounded-3xl animate-fade-in" dir="rtl">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 no-print border-b border-slate-100 dark:border-slate-700 pb-4 gap-4">
+          <button 
+            onClick={() => {
+              setShowPrintModal(false);
+              setPrintTargetReceipt(null);
+            }}
+            className="p-2.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-200 rounded-xl flex items-center gap-2 font-bold text-sm cursor-pointer"
+          >
+            <X className="w-5 h-5" /> رجوع
+          </button>
+          <button 
+            onClick={() => window.print()}
+            className="px-5 py-2.5 bg-slate-800 text-white hover:bg-slate-700 rounded-xl flex items-center gap-2 font-bold text-sm cursor-pointer shadow-md w-full md:w-auto justify-center"
+          >
+            <Printer className="w-5 h-5" /> طباعة الإيصال
+          </button>
+        </div>
+
+        <div id="printable-group-roster" className="bg-white dark:bg-slate-800 w-full max-w-sm mx-auto shadow-md rounded-2xl border-2 border-slate-900 p-4 sm:p-6 print:shadow-none print:border-2 print:max-w-none print:w-[320px]">
+          <div className="text-center border-b-2 border-dashed border-slate-300 dark:border-slate-600 dark:border-slate-600 pb-4 mb-4">
+            <h2 className="text-xl font-black text-slate-900 dark:text-slate-50">{centerName}</h2>
+            {centerPhone && <p className="text-sm font-bold text-slate-600 dark:text-slate-300 mt-1">هاتف: {centerPhone}</p>}
+            <div className="mt-3 inline-block bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 dark:text-slate-100 font-black text-sm px-4 py-1.5 rounded-full shadow-sm">
+              إيصال استلام نقدية
+            </div>
+          </div>
+
+          <div className="space-y-3 text-sm font-bold text-slate-700 dark:text-slate-200 mb-6 font-sans">
+            <div className="flex justify-between border-b border-slate-100 dark:border-slate-700 pb-2">
+              <span className="text-slate-500 dark:text-slate-400">رقم الإيصال</span>
+              <span className="font-mono text-slate-900 dark:text-slate-50 text-sm sm:text-base">{printTargetReceipt.receipt_number}</span>
+            </div>
+            <div className="flex justify-between border-b border-slate-100 dark:border-slate-700 pb-2">
+              <span className="text-slate-500 dark:text-slate-400">تاريخ السداد</span>
+              <span>{printTargetReceipt.payment_date}</span>
+            </div>
+            <div className="flex justify-between border-b border-slate-100 dark:border-slate-700 pb-2">
+              <span className="text-slate-500 dark:text-slate-400">اسم الطالب</span>
+              <span className="text-slate-900 dark:text-slate-50">{studentInfo ? studentInfo.name : 'طالب محذوف'}</span>
+            </div>
+            <div className="flex justify-between border-b border-slate-100 dark:border-slate-700 pb-2">
+              <span className="text-slate-500 dark:text-slate-400">رقم القيد</span>
+              <span className="font-mono">{studentInfo ? studentInfo.registration_id : '-'}</span>
+            </div>
+            <div className="flex justify-between border-b border-slate-100 dark:border-slate-700 pb-2">
+              <span className="text-slate-500 dark:text-slate-400">نوع السداد</span>
+              <span>
+                {printTargetReceipt.category === 'tuition' 
+                  ? 'اشتراك شهري'
+                  : printTargetReceipt.category === ('book' as any)
+                  ? 'مذكرة دراسية'
+                  : printTargetReceipt.category === ('exam' as any)
+                  ? 'رسوم امتحانات'
+                  : 'رسوم أخرى'
+                }
+              </span>
+            </div>
+            {printTargetReceipt.category === 'tuition' && (
+              <div className="flex justify-between border-b border-slate-100 dark:border-slate-700 pb-2">
+                <span className="text-slate-500 dark:text-slate-400">عن شهر</span>
+                <span>{printTargetReceipt.month}</span>
+              </div>
+            )}
+            <div className="flex justify-between bg-slate-50 dark:bg-slate-900/50 p-2 rounded-lg border border-slate-100 dark:border-slate-700">
+              <span className="text-slate-500 dark:text-slate-400">المبلغ المدفوع</span>
+              <span className="text-sm sm:text-base sm:text-lg font-black text-slate-900 dark:text-slate-50">{printTargetReceipt.amount} ج.م</span>
+            </div>
+            <div className="flex justify-between text-xs pt-1">
+              <span className="text-slate-500 dark:text-slate-400">وسيلة المعاملة</span>
+              <span className="font-semibold text-slate-700 dark:text-slate-200">
+                {printTargetReceipt.payment_method === 'cash' ? 'نقدي (Cash)' : printTargetReceipt.payment_method === 'card' ? 'بطاقة POS' : 'Vodafone cash'}
+              </span>
+            </div>
+          </div>
+
+          <div className="text-center text-xs text-slate-500 dark:text-slate-400 font-bold border-t-2 border-dashed border-slate-300 dark:border-slate-600 dark:border-slate-600 pt-4 mt-2">
+            تم استخراج هذا الإيصال إلكترونياً من نظام شؤون الطلاب.<br/>
+            شكراً لثقتكم بالمركز التعليمي.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6" id="sams_fees_module" dir="rtl">
+
+      {/* Global Processing Progress Overlay */}
+      <AnimatePresence>
+        {isProcessing && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4 no-print print:hidden"
+            dir="rtl"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white dark:bg-slate-800 p-8 rounded-3xl shadow-2xl max-w-sm w-full text-center space-y-6"
+            >
+              <div className="w-16 h-16 bg-amber-50 dark:bg-amber-900/40 rounded-2xl mx-auto flex items-center justify-center">
+                <motion.div
+                  animate={{ rotate: 360 }}
+                  transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+                >
+                  <RefreshCw className="w-8 h-8 text-amber-500" />
+                </motion.div>
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-sm sm:text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100">{processingText}</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 font-sans">يرجى الانتظار، جاري معالجة البيانات...</p>
+              </div>
+              
+              <div className="space-y-2">
+                <div className="h-3 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                  <motion.div 
+                    className="h-full bg-amber-500"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${processingProgress}%` }}
+                    transition={{ duration: 0.2 }}
+                  />
+                </div>
+                <div className="flex justify-between text-xs font-bold text-slate-600 dark:text-slate-300 font-mono">
+                  <span>{processingProgress}%</span>
+                  <span>100%</span>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Title Header */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white dark:bg-slate-800 p-4 sm:p-5 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-2xs">
+        <div className="text-right">
+          <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+            <Coins className="w-5 h-5 text-[#0D5C8C]" />
+            <span>نظام اشتراكات الطلاب والتحصيل الشهري</span>
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">تتبع وتحصيل اشتراكات المجموعات لشهر {selectedMonth} ومراجعة مديونيات الطلاب بنقرة واحدة</p>
+        </div>
+
+        <div className="flex gap-2">
+          {activeTab === 'subscriptions' ? (
+            <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-900/50 p-1.5 rounded-xl border border-slate-200 dark:border-slate-700">
+              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 pr-1">قيمة اشتراك للصف المحدد:</span>
+              <input 
+                type="number" 
+                value={activeGradeMonthlyFee}
+                onChange={(e) => handleSaveGradeFee(selectedGrade, Number(e.target.value))}
+                className="w-16 text-center text-xs font-sans font-bold text-[#0D5C8C] bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md py-1 px-1.5 focus:outline-hidden"
+                title="عدّل قيمة اشتراك الشهر لهذا الصف واحفظ لتتغير قيمة السداد التلقائية لكل الطلاب"
+              />
+              <span className="text-[10px] text-slate-400 font-bold pl-1">ج.م</span>
+            </div>
+          ) : (
+            <button
+              onClick={() => {
+                setShowGeneralPayForm(!showGeneralPayForm);
+                setErrorInfo('');
+                setSuccessInfo('');
+              }}
+              className="flex items-center gap-1.5 px-4 py-2 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white text-xs font-bold rounded-xl shadow-xs transition-colors cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>تسجيل سداد اشتراك الشهر</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Navigation Tabs */}
+      <div className="relative w-full overflow-hidden ">
+        <div className="flex border-b border-slate-100 dark:border-slate-700 gap-1 bg-white dark:bg-slate-800 p-1.5 rounded-xl border border-gray-100 dark:border-gray-700 shadow-3xs overflow-x-auto no-scrollbar scroll-smooth mask-edges" style={{ WebkitOverflowScrolling: 'touch' }}>
+          <button
+            onClick={() => setActiveTab('subscriptions')}
+            className={`whitespace-nowrap flex-shrink-0 select-none flex-1 min-w-fit px-4 py-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              activeTab === 'subscriptions'
+                ? 'bg-[#0D5C8C] text-white shadow-xs'
+                : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-700 dark:text-slate-200'
+            }`}
+          >
+            منصة الاشتراكات الشهرية 🗓️
+          </button>
+          <button
+            onClick={() => {
+              setActiveTab('all_receipts');
+              setShowGeneralPayForm(false);
+            }}
+            className={`whitespace-nowrap flex-shrink-0 select-none flex-1 min-w-fit px-4 py-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              activeTab === 'all_receipts'
+                ? 'bg-[#0D5C8C] text-white shadow-xs'
+                : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-700 dark:text-slate-200'
+            }`}
+          >
+            دفتر الإيصالات والمدفوعات التاريخي 📑
+          </button>
+        </div>
+      </div>
+
+      {/* Alerts */}
+      {successInfo && (
+        <div className="p-4 bg-emerald-50 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-700 text-emerald-800 dark:text-emerald-300 rounded-xl text-xs flex items-center gap-2 animate-fade-in">
+          <Check className="w-4.5 h-4.5 text-emerald-600 shrink-0" />
+          <span className="font-semibold">{successInfo}</span>
+        </div>
+      )}
+
+      {errorInfo && (
+        <div className="p-4 bg-red-50 dark:bg-red-900/40 border border-red-200 text-[#C0152A] rounded-xl text-xs flex items-center gap-2 animate-fade-in">
+          <AlertCircle className="w-4.5 h-4.5 text-[#E8192C] shrink-0" />
+          <span className="font-semibold">{errorInfo}</span>
+        </div>
+      )}
+
+      {/* General Fee Recording Form (Tab 2 subform) */}
+      {showGeneralPayForm && activeTab === 'all_receipts' && (
+        <div className="bg-white dark:bg-slate-800 p-4 sm:p-6 rounded-2xl border-2 border-dashed border-[#0D5C8C]/20 shadow-xs animate-slide-up">
+          <h3 className="font-bold text-[#0D5C8C] text-sm mb-4 border-b border-slate-50 dark:border-slate-800 pb-2">تسجيل إيصال سداد اشتراك الشهر الدراسي</h3>
+          <form onSubmit={handleGeneralPaySubmit} className="grid grid-cols-1 md:grid-cols-4 gap-4 text-right">
+            
+            <div className="space-y-1">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">الطالب المستفيد <span className="text-rose-500">*</span></label>
+              <select
+                value={generalPayData.student_id}
+                onChange={(e) => setGeneralPayData({ ...generalPayData, student_id: e.target.value })}
+                className="w-full min-w-0 max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800"
+                required
+              >
+                <option value="">-- اختر الطالب --</option>
+                {students.map(s => (
+                  <option key={s.id} value={s.id}>{s.name} (كود: #{s.registration_id})</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">قيمة المبلغ المدفوع (ج.م) <span className="text-rose-500">*</span></label>
+              <input
+                type="number"
+                min={10}
+                max={15000}
+                value={generalPayData.amount}
+                onChange={(e) => setGeneralPayData({ ...generalPayData, amount: Number(e.target.value) })}
+                className="w-full min-w-0 max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 px-3 py-2 rounded-lg text-slate-700 dark:text-slate-200 text-right"
+                required
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">نوع البند الدراسي الرسومي</label>
+              <select
+                value={generalPayData.category}
+                onChange={(e) => setGeneralPayData({ ...generalPayData, category: 'tuition' })}
+                className="w-full min-w-0 max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800"
+              >
+                <option value="tuition">اشتراك الشهر الدراسي (Tuition)</option>
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">طريقة الدفع المعتمدة</label>
+              <select
+                value={generalPayData.payment_method}
+                onChange={(e) => setGeneralPayData({ ...generalPayData, payment_method: e.target.value as FeePayment['payment_method'] })}
+                className="w-full min-w-0 max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800"
+              >
+                <option value="cash">نقدي (Cash)</option>
+                <option value="card">دفع إلكتروني (POS/فيزا)</option>
+                <option value="transfer">تحويل فودافون كاش / بنكي</option>
+              </select>
+            </div>
+
+            <div className="space-y-1 md:col-span-2">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">سداد لاشتراك شهر:</label>
+              <select
+                value={generalPayData.month}
+                onChange={(e) => setGeneralPayData({ ...generalPayData, month: e.target.value })}
+                className="w-full min-w-0 max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800"
+              >
+                {MONTHS_LIST.map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="md:col-span-4 flex justify-end gap-2 border-t border-slate-100 dark:border-slate-700 pt-3">
+              <button
+                type="button"
+                onClick={() => setShowGeneralPayForm(false)}
+                className="px-4 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800/50 text-slate-600 dark:text-slate-300 font-bold cursor-pointer"
+              >
+                إلغاء السداد
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white text-xs font-bold rounded-lg cursor-pointer flex items-center gap-1.5"
+              >
+                <Receipt className="w-3.5 h-3.5" />
+                <span>توثيق الفاتورة وطباعة الإيصال</span>
+              </button>
+            </div>
+
+          </form>
+        </div>
+      )}
+
+
+      {/* TAB 1: MONTHLY SUBSCRIPTIONS ENGINE */}
+      {activeTab === 'subscriptions' && (
+        <div className="space-y-6">
+          
+          {/* Background Reminder Service Status Banner */}
+          <div className="bg-gradient-to-r from-sky-50 via-slate-50 to-indigo-50/60 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900 border border-sky-100 dark:border-sky-800 dark:border-slate-800 p-4 rounded-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-3 shadow-3xs">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-[#0D5C8C]/10 dark:bg-[#0D5C8C]/30 text-[#0D5C8C] dark:text-sky-300 rounded-xl flex items-center justify-center shrink-0">
+                <Bot className="w-5 h-5 animate-pulse text-[#0D5C8C]" />
+              </div>
+              <div className="space-y-0.5 text-right">
+                <div className="flex items-center gap-2">
+                  <h4 className="font-bold text-slate-800 dark:text-slate-100 text-xs">
+                    خدمة الاحتساب الذكي لاشتراكات الطلاب حسب تاريخ التسجيل
+                  </h4>
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
+                    نشطة وتعمل بالخلفية
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 font-sans">
+                  يُحسب لكل طالب شهره بالكامل بدايةً من تاريخ تسجيله الفعلي في السيستم (وليس عشوائياً بنهاية التقويم)، مع متابعة دقيقة للمبالغ المتبقية وحساب الشهر الجديد تلقائياً عند السداد.
+                  {bgServiceStats && (
+                    <span className="mr-1 text-slate-700 dark:text-slate-200 dark:text-slate-300 font-semibold">
+                      (آخر فحص: {bgServiceStats.lastRun} | طلاب مستحق عليهم: {bgServiceStats.unpaidCount})
+                    </span>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={runBackgroundCheck}
+              className="px-3.5 py-2 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white text-xs font-bold rounded-xl transition-all hover:scale-102 cursor-pointer flex items-center gap-1.5 shrink-0 shadow-xs"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>فحص الاستحقاقات والديون الآن 🔄</span>
+            </button>
+          </div>
+
+          {/* Controls Panel (Group & Month Selector) */}
+          <div className="bg-white dark:bg-slate-800 p-4 sm:p-5 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-3xs grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            
+            <div className="space-y-1.5 text-right">
+              <label className="block text-xs font-extrabold text-slate-500 dark:text-slate-400">اختر الصف الدراسي:</label>
+              <select
+                value={selectedGrade}
+                onChange={(e) => {
+                  setSelectedGrade(e.target.value);
+                  setSelectedClass('all');
+                }}
+                className="w-full min-w-0 max-w-full flex-1 text-xs font-sans font-semibold border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg text-slate-700 dark:text-slate-200 bg-slate-50/50 focus:bg-white dark:bg-slate-800 focus:outline-hidden"
+              >
+                {["الأول الإعدادي","الثاني الإعدادي","الثالث الإعدادي","الأول الثانوي","الثاني الثانوي","الثالث الثانوي"].map(g => (
+                  <option key={g} value={g}>{g}</option>
+                ))}
+              </select>
+            </div>
+            
+            <div className="space-y-1.5 text-right">
+              <label className="block text-xs font-extrabold text-slate-500 dark:text-slate-400">اختر المجموعة الدراسية:</label>
+              <select
+                value={selectedClass}
+                onChange={(e) => setSelectedClass(e.target.value)}
+                className="w-full min-w-0 max-w-full flex-1 text-xs font-sans font-semibold border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg text-slate-700 dark:text-slate-200 bg-slate-50/50 focus:bg-white dark:bg-slate-800 focus:outline-hidden"
+              >
+                <option value="all">جميع المجموعات (للصف المحدد)</option>
+                {classes.filter(c => c.grade_level === selectedGrade).map(c => (
+                  <option key={c.id} value={c.id}>{c.name} ({c.grade_level} - {c.education_type || 'عام'})</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-1.5 text-right">
+              <label className="block text-xs font-extrabold text-slate-500 dark:text-slate-400">اختر شهر الاشتراك الحالي:</label>
+              <select
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+                className="w-full min-w-0 max-w-full flex-1 text-xs font-sans font-semibold border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg text-slate-700 dark:text-slate-200 bg-slate-50/50 focus:bg-white dark:bg-slate-800 focus:outline-hidden"
+              >
+                {MONTHS_LIST.map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-1.5 text-right">
+              <label className="block text-xs font-extrabold text-slate-500 dark:text-slate-400">البحث بالاسم أو رقم القيد الكودي:</label>
+              <div className="relative">
+                <Search className="absolute right-3 top-3 w-4 h-4 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="ابحث عن طالب بالمجموعة..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full min-w-0 max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 pr-9 pl-3 py-2.5 rounded-lg text-slate-700 dark:text-slate-200 bg-slate-50/50 focus:bg-white dark:bg-slate-800 focus:outline-hidden"
+                />
+              </div>
+            </div>
+
+          </div>
+
+          {/* Interactive Visual Months Navigator Bar */}
+          <div className="bg-white dark:bg-slate-800 p-3 sm:p-4 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-3xs space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-black text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                <Calendar className="w-4 h-4 text-[#0D5C8C] dark:text-sky-400" />
+                <span>شريط الشهور الدراسية (اضغط للتنقل السريع بين الشهور):</span>
+              </span>
+              <span className="text-[11px] font-bold text-slate-400">
+                العام الدراسي 2026 - 2027
+              </span>
+            </div>
+            
+            <div className="relative w-full overflow-hidden ">
+              <div className="flex items-center gap-2 overflow-x-auto pb-1.5 pt-0.5 no-scrollbar scroll-smooth mask-edges" style={{ WebkitOverflowScrolling: 'touch' }}>
+                {MONTHS_LIST.map((month) => {
+                  const isSelected = month === selectedMonth;
+                  // Count paid students for this month
+                  const paidCount = classStudents.filter(st => 
+                    payments.some(p => p.student_id === st.id && p.category === 'tuition' && p.month === month)
+                  ).length;
+                  const totalCount = classStudents.length;
+                  const monthPercent = totalCount > 0 ? Math.round((paidCount / totalCount) * 100) : 0;
+                  const isPast = MONTHS_LIST.indexOf(month) < currentMonthIdx;
+
+                  return (
+                    <button
+                      key={month}
+                      type="button"
+                      onClick={() => setSelectedMonth(month)}
+                      className={`whitespace-nowrap flex-shrink-0 select-none px-3 py-2 rounded-xl border text-right transition-all cursor-pointer flex flex-col gap-1 min-w-[110px] ${
+                        isSelected
+                          ? 'bg-[#0D5C8C] text-white border-[#0D5C8C] shadow-md shadow-[#0D5C8C]/20 scale-102 ring-2 ring-[#0D5C8C]/30'
+                          : isPast && monthPercent === 100
+                          ? 'bg-emerald-50/70 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100/80'
+                          : isPast && monthPercent < 50
+                          ? 'bg-rose-50/60 dark:bg-rose-950/30 text-rose-900 dark:text-rose-200 border-rose-200 dark:border-rose-800 hover:bg-rose-100/70'
+                          : 'bg-slate-50 dark:bg-slate-900/50 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                    <div className="flex items-center justify-between gap-1 w-full">
+                      <span className={`text-xs font-black ${isSelected ? 'text-white' : ''}`}>
+                        {month.split(' ')[0]}
+                      </span>
+                      <span className={`text-[10px] font-mono font-bold ${
+                        isSelected 
+                          ? 'text-sky-200' 
+                          : monthPercent >= 80 
+                          ? 'text-emerald-600 dark:text-emerald-400' 
+                          : monthPercent >= 40 
+                          ? 'text-amber-600 dark:text-amber-400' 
+                          : 'text-rose-600 dark:text-rose-400'
+                      }`}>
+                        {monthPercent}%
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] opacity-85 font-medium">
+                      <span>{month.split(' ')[1]}</span>
+                      <span>{paidCount}/{totalCount} طالب</span>
+                    </div>
+                  </button>
+                );
+              })}
+              </div>
+            </div>
+          </div>
+
+          {/* Subscription Analytics Row */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            
+            <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-gray-100 dark:border-gray-700 flex items-center justify-between shadow-3xs">
+              <div className="space-y-1 text-right">
+                <span className="text-[10px] text-slate-400 font-bold block">إجمالي طلاب المجموعة</span>
+                <span className="text-sm sm:text-base sm:text-lg font-black text-slate-800 dark:text-slate-100">{classStudents.length} طلاب</span>
+              </div>
+              <div className="p-2.5 bg-slate-50 dark:bg-slate-900/50 rounded-lg text-slate-600 dark:text-slate-300">
+                <UserCheck className="w-4.5 h-4.5" />
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-gray-100 dark:border-gray-700 flex items-center justify-between shadow-3xs">
+              <div className="space-y-1 text-right">
+                <span className="text-[10px] text-slate-400 font-bold block">اشتراكات سارية ومسددة بالكامل</span>
+                <span className="text-sm sm:text-base sm:text-lg font-black text-emerald-600 dark:text-emerald-400">
+                  {fullyPaidStudentsCount} <span className="text-xs text-slate-400 font-bold">طالب ({collectionPercentage}%)</span>
+                </span>
+              </div>
+              <div className="p-2.5 bg-emerald-50 dark:bg-emerald-950/60 rounded-lg text-emerald-600 dark:text-emerald-400">
+                <CheckCircle2 className="w-4.5 h-4.5" />
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-gray-100 dark:border-gray-700 flex items-center justify-between shadow-3xs">
+              <div className="space-y-1 text-right">
+                <span className="text-[10px] text-slate-400 font-bold block">عليهم متبقيات مالية معلقة</span>
+                <span className="text-sm sm:text-base sm:text-lg font-black text-amber-600 dark:text-amber-400">
+                  {partialPaidStudentsCount} <span className="text-xs text-slate-400 font-bold">طالب ({totalRemainingDebtSum.toLocaleString()} ج.م)</span>
+                </span>
+              </div>
+              <div className="p-2.5 bg-amber-50 dark:bg-amber-950/60 rounded-lg text-amber-600 dark:text-amber-400">
+                <AlertCircle className="w-4.5 h-4.5" />
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-gray-100 dark:border-gray-700 flex items-center justify-between shadow-3xs">
+              <div className="space-y-1 text-right">
+                <span className="text-[10px] text-slate-400 font-bold block">مستحق التجديد / متأخر</span>
+                <span className="text-sm sm:text-base sm:text-lg font-black text-rose-600 dark:text-rose-400">
+                  {dueOrOverdueStudentsCount} <span className="text-xs text-slate-400 font-bold">طالب</span>
+                </span>
+              </div>
+              <div className="p-2.5 bg-rose-50 dark:bg-rose-950/60 rounded-lg text-rose-500 dark:text-rose-400">
+                <XCircle className="w-4.5 h-4.5" />
+              </div>
+            </div>
+
+          </div>
+
+          {/* Students Subscription Matrix */}
+          <div className="bg-white dark:bg-slate-800 p-4 sm:p-5 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm space-y-4">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3 border-b border-gray-50 dark:border-gray-700/60 pb-3">
+              <div>
+                <h3 className="font-extrabold text-slate-800 dark:text-slate-100 text-sm sm:text-base flex items-center gap-2">
+                  <span>جدول الاشتراكات والمتابعة المالية لطلاب {selectedClass === 'all' ? selectedGrade : '(' + classes.find(c => c.id === selectedClass)?.name + ')'}</span>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-100 text-[#0D5C8C] dark:bg-sky-950/80 dark:text-sky-300">
+                    نظام الحساب من تاريخ التسجيل
+                  </span>
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  يُحسب لكل طالب شهره بالكامل بدايةً من تاريخ تسجيله، مع متابعة دقيقة للمتبقيات وتاريخ التجديد القادم
+                </p>
+              </div>
+
+              {/* Actions & Print */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => setShowPrintReportModal(true)}
+                  className="flex items-center gap-1.5 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>طباعة كشف الاشتراكات</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Smart Filter Tabs */}
+            <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => setSubFilter('all')}
+                className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                  subFilter === 'all'
+                    ? 'bg-slate-800 text-white dark:bg-slate-100 dark:text-slate-900 shadow-xs'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'
+                }`}
+              >
+                <span>جميع الطلاب</span>
+                <span className="text-[10px] px-1.5 py-0.2 bg-white/20 rounded-full font-mono">{classStudents.length}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSubFilter('paid')}
+                className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                  subFilter === 'paid'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/50 dark:text-emerald-300'
+                }`}
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>مسدد بالكامل</span>
+                <span className="text-[10px] px-1.5 py-0.2 bg-white/20 rounded-full font-mono">{fullyPaidStudentsCount}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSubFilter('partial')}
+                className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                  subFilter === 'partial'
+                    ? 'bg-amber-600 text-white shadow-xs'
+                    : 'bg-amber-50 text-amber-800 hover:bg-amber-100 dark:bg-amber-950/50 dark:text-amber-300'
+                }`}
+              >
+                <AlertCircle className="w-3.5 h-3.5" />
+                <span>عليهم متبقيات مالية</span>
+                <span className="text-[10px] px-1.5 py-0.2 bg-white/20 rounded-full font-mono">{partialPaidStudentsCount}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSubFilter('due')}
+                className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                  subFilter === 'due'
+                    ? 'bg-rose-600 text-white shadow-xs'
+                    : 'bg-rose-50 text-rose-800 hover:bg-rose-100 dark:bg-rose-950/50 dark:text-rose-300'
+                }`}
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>مستحق أو متأخر</span>
+                <span className="text-[10px] px-1.5 py-0.2 bg-white/20 rounded-full font-mono">{dueOrOverdueStudentsCount}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSubFilter('new')}
+                className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                  subFilter === 'new'
+                    ? 'bg-[#0D5C8C] text-white shadow-xs'
+                    : 'bg-sky-50 text-[#0D5C8C] hover:bg-sky-100 dark:bg-sky-950/50 dark:text-sky-300'
+                }`}
+              >
+                <span>مسجلين حديثاً (خلال أسبوع)</span>
+                <span className="text-[10px] px-1.5 py-0.2 bg-white/20 rounded-full font-mono">{newStudentsCount}</span>
+              </button>
+            </div>
+
+            <div className="overflow-x-auto max-h-[60vh] overflow-y-auto border border-gray-100 dark:border-gray-700 rounded-xl shadow-xs mask-edges">
+              
+              {/* Mobile View: Dynamic Registration-Date Subscription Cards */}
+              <div className="md:hidden divide-y divide-slate-100 dark:divide-slate-700/60 bg-white dark:bg-slate-800">
+                {filteredClassStudents.length > 0 ? filteredClassStudents.map(student => {
+                  const sub = studentSubMap.get(student.id);
+                  const activeCycle = sub?.currentCycle;
+                  const activeFee = sub?.monthlyFee || activeGradeMonthlyFee;
+                  const isPaid = activeCycle?.status === 'paid';
+                  const isPartial = activeCycle?.status === 'partial';
+                  const remaining = activeCycle?.remainingAmount || 0;
+                  const studentPayments = payments.filter(p => p.student_id === student.id && p.category === 'tuition');
+                  const lastPayment = studentPayments[studentPayments.length - 1];
+
+                  return (
+                    <div key={student.id} className="p-3.5 space-y-3 hover:bg-slate-50/60 dark:hover:bg-slate-800/60 transition-colors">
+                      {/* Top Row: Info & Status */}
+                      <div className="flex justify-between items-start gap-2">
+                        <div className="min-w-0">
+                          <p className="font-bold text-slate-800 dark:text-slate-100 text-sm leading-snug truncate">{student.name}</p>
+                          <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                            <span className="text-[10px] font-mono font-extrabold text-[#0D5C8C] dark:text-sky-400">#{student.registration_id}</span>
+                            <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">
+                              تاريخ التسجيل: {sub?.startDateFormatted || (student as any).enrollment_date || student.created_at} ({sub?.registrationText})
+                            </span>
+                          </div>
+                        </div>
+                        <div className="shrink-0 mt-0.5">
+                          {isPaid ? (
+                            <span className="inline-flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 px-2 py-0.5 rounded-full text-[10px] font-bold shadow-2xs">
+                              <Check className="w-3 h-3" /> مسدد ({activeCycle.amountPaid} ج.م)
+                            </span>
+                          ) : isPartial ? (
+                            <span className="inline-flex items-center gap-1 bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 px-2 py-0.5 rounded-full text-[10px] font-bold shadow-2xs">
+                              <AlertCircle className="w-3 h-3" /> متبقي: {remaining} ج.م
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-300 border border-rose-200 dark:border-rose-800 px-2 py-0.5 rounded-full text-[10px] font-bold shadow-2xs">
+                              <X className="w-3 h-3" /> مستحق ({activeFee} ج.م)
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Active Cycle Period Card */}
+                      <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-700/60 space-y-1.5 text-xs">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-bold text-[#0D5C8C] dark:text-sky-400 flex items-center gap-1">
+                            <Calendar className="w-3 h-3" />
+                            <span>{activeCycle?.label || 'الشهر الحالي'}</span>
+                          </span>
+                          <span className="text-slate-500 font-sans">{activeCycle?.periodLabel}</span>
+                        </div>
+                        <div className="flex items-center justify-between text-[10px] font-medium text-slate-600 dark:text-slate-300">
+                          <span>المدفوع: <strong className="text-emerald-600 font-bold">{activeCycle?.amountPaid || 0} ج.م</strong></span>
+                          <span>المتبقي: <strong className={remaining > 0 ? "text-rose-600 font-bold" : "text-emerald-600 font-bold"}>{remaining} ج.م</strong></span>
+                          <span>التجديد القادم: <strong className="text-slate-700 dark:text-slate-200">{sub?.nextDueDateFormatted}</strong></span>
+                        </div>
+                      </div>
+
+                      {/* Cycles Timeline Pills */}
+                      {sub && sub.cycles.length > 0 && (
+                        <div className="relative w-full overflow-hidden">
+                          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 mask-edges" style={{ WebkitOverflowScrolling: 'touch' }}>
+                            {sub.cycles.map(cycle => (
+                              <button
+                                key={cycle.cycleNumber}
+                                type="button"
+                                onClick={() => openQuickPayForStudent(student, cycle)}
+                                className={`whitespace-nowrap px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 shrink-0 ${
+                                  cycle.status === 'paid'
+                                    ? 'bg-emerald-100 text-emerald-950 border-emerald-300 dark:bg-emerald-950/90 dark:text-emerald-300'
+                                    : cycle.status === 'partial'
+                                    ? 'bg-amber-100 text-amber-950 border-amber-300 dark:bg-amber-950/90 dark:text-amber-300'
+                                    : 'bg-rose-100 text-rose-950 border-rose-300 dark:bg-rose-950/90 dark:text-rose-300'
+                                }`}
+                              >
+                                <span>{cycle.label}</span>
+                                {cycle.status === 'paid' ? (
+                                  <Check className="w-3 h-3 text-emerald-700 dark:text-emerald-400 stroke-[3]" />
+                                ) : cycle.status === 'partial' ? (
+                                  <span className="text-[9px] font-mono">(-{cycle.remainingAmount})</span>
+                                ) : (
+                                  <X className="w-3 h-3 text-rose-700 dark:text-rose-400 stroke-[3]" />
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Bottom Row: Actions */}
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-700/40">
+                        <div className="flex flex-wrap items-center gap-1.5 w-full justify-end">
+                          {remaining > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => openQuickPayForStudent(student, activeCycle, remaining)}
+                              className="px-3 py-1.5 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white rounded-lg font-bold flex items-center gap-1 transition-all cursor-pointer text-xs shadow-2xs"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span>تحصيل {remaining} ج.م</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => openQuickPayForStudent(student)}
+                              className="px-2.5 py-1.5 bg-sky-50 text-[#0D5C8C] border border-sky-200 dark:bg-sky-950/60 dark:text-sky-300 dark:border-sky-800 rounded-lg font-bold flex items-center gap-1 transition-all cursor-pointer text-xs"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span>سداد مقدماً</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => openWhatsAppForStudent(student)}
+                            className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold flex items-center gap-1 transition-all cursor-pointer text-xs shadow-2xs"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                            <span>واتساب</span>
+                          </button>
+
+                          {lastPayment && (
+                            <button
+                              type="button"
+                              onClick={() => setSelectedReceipt(lastPayment)}
+                              className="px-2 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-[#0D5C8C] dark:text-sky-300 border border-slate-200 dark:border-slate-700 rounded-lg font-bold flex items-center gap-1 transition-colors cursor-pointer text-xs"
+                              title="عرض آخر إيصال سداد"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                              <span>إيصال</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }) : (
+                  <div className="p-8 text-center text-slate-400 space-y-2">
+                    <p className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                      {searchQuery ? 'لا يوجد طلاب يطابقون بحثك ضمن الشروط المحددة.' : 'لا يوجد طلاب مسجلين ضمن هذه الشروط حالياً.'}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Desktop Table View */}
+              <div className="hidden md:block">
+                <table className="min-w-full text-right relative border-collapse" dir="rtl">
+                <thead className="sticky top-0 z-20 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-black border-b-2 border-slate-200 dark:border-slate-700 shadow-xs">
+                  <tr>
+                    <th className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 w-24 whitespace-nowrap">كود وقيد الطالب</th>
+                    <th className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">اسم الطالب وتاريخ التسجيل</th>
+                    <th className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">
+                      دورة الاشتراك الحالية (تاريخ التسجيل ➜ التجديد)
+                    </th>
+                    <th className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">
+                      تطور الشهور (الدورات الشهرية)
+                    </th>
+                    <th className="p-3 text-center bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">الحالة والمديونية المتبقية</th>
+                    <th className="p-3 text-left bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">إجراءات السداد والإيصال</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-700/60 text-xs text-slate-700 dark:text-slate-200 font-sans">
+                  {filteredClassStudents.map(student => {
+                    const sub = studentSubMap.get(student.id);
+                    const activeCycle = sub?.currentCycle;
+                    const activeFee = sub?.monthlyFee || activeGradeMonthlyFee;
+                    const isPaid = activeCycle?.status === 'paid';
+                    const isPartial = activeCycle?.status === 'partial';
+                    const remaining = activeCycle?.remainingAmount || 0;
+                    const studentPayments = payments.filter(p => p.student_id === student.id && p.category === 'tuition');
+                    const lastPayment = studentPayments[studentPayments.length - 1];
+
+                    return (
+                      <tr key={student.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-all">
+                        
+                        {/* Student Reg ID */}
+                        <td className="p-3 font-mono font-extrabold text-[#0D5C8C] dark:text-sky-400">
+                          <div>#{student.registration_id}</div>
+                          <span className="text-[10px] text-slate-400 font-normal">{student.education_type || 'عام'}</span>
+                        </td>
+                        
+                        {/* Student Name & Registration Details */}
+                        <td className="p-3">
+                          <div className="flex flex-col">
+                            <span className="font-bold text-slate-800 dark:text-slate-100 text-[13px]">{student.name}</span>
+                            <div className="flex items-center gap-1.5 text-[10px] text-slate-400 mt-0.5">
+                              <span className="text-slate-600 dark:text-slate-300 font-medium">
+                                تسجيل: {sub?.startDateFormatted || (student as any).enrollment_date || student.created_at}
+                              </span>
+                              <span className="px-1.5 py-0.2 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 text-[9px] font-bold">
+                                {sub?.registrationText}
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-slate-400 font-sans">ولي الأمر: {student.parent_phone || student.phone}</span>
+                          </div>
+                        </td>
+
+                        {/* Active Subscription Cycle & Due Date */}
+                        <td className="p-3">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-extrabold text-[#0D5C8C] dark:text-sky-300 text-xs">
+                                {activeCycle?.label || 'الشهر الحالي'}
+                              </span>
+                              <span className="text-[10px] text-slate-500 font-sans">
+                                ({activeCycle?.periodLabel})
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center gap-2">
+                              <span>التجديد القادم: <strong className="text-slate-700 dark:text-slate-200">{sub?.nextDueDateFormatted}</strong></span>
+                              <span>قيمة الاشتراك: <strong className="text-slate-700 dark:text-slate-200">{activeFee} ج.م</strong></span>
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Visual Rolling Timeline of Calculated Cycles */}
+                        <td className="p-3">
+                          <div className="flex items-center gap-1.5 flex-wrap max-w-xs">
+                            {sub?.cycles.map(cycle => {
+                              const isCurrent = cycle.isCurrent;
+                              const isCyclePaid = cycle.status === 'paid';
+                              const isCyclePartial = cycle.status === 'partial';
+
+                              return (
+                                <button
+                                  key={cycle.cycleNumber}
+                                  type="button"
+                                  onClick={() => openQuickPayForStudent(student, cycle)}
+                                  className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-black border transition-all cursor-pointer shadow-2xs hover:scale-105 ${
+                                    isCyclePaid
+                                      ? 'bg-emerald-100 text-emerald-950 border-emerald-300 dark:bg-emerald-950/90 dark:text-emerald-300 dark:border-emerald-600'
+                                      : isCyclePartial
+                                      ? 'bg-amber-100 text-amber-950 border-amber-300 dark:bg-amber-950/90 dark:text-amber-300 dark:border-amber-700'
+                                      : 'bg-rose-100 text-rose-950 border-rose-300 dark:bg-rose-950/90 dark:text-rose-300 dark:border-rose-800'
+                                  } ${isCurrent ? 'ring-2 ring-[#0D5C8C]/50 font-extrabold' : ''}`}
+                                  title={`${cycle.label} (${cycle.periodLabel}): ${cycle.statusText} - انقر للتحصيل أو المعاينة`}
+                                >
+                                  <span>{cycle.label}</span>
+                                  {isCyclePaid ? (
+                                    <Check className="w-3 h-3 text-emerald-700 dark:text-emerald-400 stroke-[3]" />
+                                  ) : isCyclePartial ? (
+                                    <span className="text-[9px] font-mono text-amber-800 dark:text-amber-300">(-{cycle.remainingAmount})</span>
+                                  ) : (
+                                    <X className="w-3 h-3 text-rose-700 dark:text-rose-400 stroke-[3]" />
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </td>
+
+                        {/* Status and Outstanding Debt Badge */}
+                        <td className="p-3 text-center">
+                          {isPaid ? (
+                            <div className="inline-flex flex-col items-center gap-0.5">
+                              <span className="inline-flex items-center gap-1 px-3 py-1 bg-emerald-100 text-emerald-950 border border-emerald-400 dark:bg-emerald-950/90 dark:text-emerald-200 dark:border-emerald-500 rounded-full font-black text-xs shadow-2xs">
+                                <Check className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400 stroke-[3]" />
+                                <span>مسدد بالكامل ✓</span>
+                              </span>
+                              <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">({activeCycle.amountPaid} ج.م)</span>
+                            </div>
+                          ) : isPartial ? (
+                            <div className="inline-flex flex-col items-center gap-0.5">
+                              <span className="inline-flex items-center gap-1 px-3 py-1 bg-amber-100 text-amber-950 border border-amber-400 dark:bg-amber-950/90 dark:text-amber-200 dark:border-amber-600 rounded-full font-black text-xs shadow-2xs">
+                                <AlertCircle className="w-3.5 h-3.5 text-amber-700 dark:text-amber-400" />
+                                <span>متبقي: {remaining} ج.م</span>
+                              </span>
+                              <span className="text-[10px] text-slate-400 font-sans">تم سداد {activeCycle.amountPaid} من أصل {activeCycle.feeRequired} ج.م</span>
+                            </div>
+                          ) : (
+                            <div className="inline-flex flex-col items-center gap-0.5">
+                              <span className="inline-flex items-center gap-1 px-3 py-1 bg-rose-100 text-rose-950 border border-rose-400 dark:bg-rose-950/90 dark:text-rose-200 dark:border-rose-700 rounded-full font-black text-xs shadow-2xs">
+                                <X className="w-3.5 h-3.5 text-rose-700 dark:text-rose-400" />
+                                <span>مستحق: {activeFee} ج.م</span>
+                              </span>
+                              <span className="text-[10px] text-rose-500 font-sans">
+                                {sub && sub.daysSinceRegistration <= 7 ? 'طالب مسجل حديثاً' : 'تأخر عن موعد الدورة'}
+                              </span>
+                            </div>
+                          )}
+                        </td>
+
+                        {/* Quick Action Buttons */}
+                        <td className="p-3 text-left">
+                          <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                            {remaining > 0 ? (
+                              <button
+                                type="button"
+                                onClick={() => openQuickPayForStudent(student, activeCycle, remaining)}
+                                className="px-2.5 py-1.5 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white rounded-lg font-bold flex items-center gap-1 transition-all hover:scale-105 cursor-pointer text-xs shadow-2xs"
+                                title={`سداد المبلغ المتبقي (${remaining} ج.م) للشهر الحالي، وترحيل الشهر الجديد تلقائياً`}
+                              >
+                                <Plus className="w-3 h-3" />
+                                <span>تحصيل {remaining} ج.م 💸</span>
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => openQuickPayForStudent(student)}
+                                className="px-2.5 py-1.5 bg-sky-50 text-[#0D5C8C] border border-sky-200 hover:bg-sky-100 dark:bg-sky-950/60 dark:text-sky-300 dark:border-sky-800 rounded-lg font-bold flex items-center gap-1 transition-all cursor-pointer text-xs"
+                                title="سداد الشهر التالي مقدماً"
+                              >
+                                <Plus className="w-3 h-3" />
+                                <span>سداد مقدماً</span>
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => openWhatsAppForStudent(student)}
+                              className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold flex items-center gap-1 transition-all hover:scale-105 cursor-pointer text-xs shadow-2xs"
+                              title={`إرسال تنبيه واتساب مفصل بالمتبقي وموعد التجديد لولي الأمر (${student.parent_phone || student.phone})`}
+                            >
+                              <MessageSquare className="w-3.5 h-3.5" />
+                              <span>واتساب 💬</span>
+                            </button>
+
+                            {lastPayment && (
+                              <button
+                                type="button"
+                                onClick={() => setSelectedReceipt(lastPayment)}
+                                className="px-2 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-[#0D5C8C] dark:text-sky-300 border border-slate-200 dark:border-slate-700 rounded-lg font-bold flex items-center gap-1 transition-colors cursor-pointer text-xs"
+                                title="طباعة الإيصال الورقي لآخر سداد"
+                              >
+                                <Printer className="w-3.5 h-3.5" />
+                                <span>إيصال</span>
+                              </button>
+                            )}
+                          </div>
+                        </td>
+
+                      </tr>
+                    );
+                  })}
+
+                  {filteredClassStudents.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="p-8 text-center text-slate-500 dark:text-slate-400 font-sans">
+                        {searchQuery ? 'لا يوجد طلاب يطابقون بحثك ضمن الشروط المحددة.' : 'لا يوجد طلاب مسجلين ضمن هذه الشروط حالياً.'}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            
+          </div>
+
+          {/* Dynamic Registration Cycle Rules Card */}
+          <div className="p-4 bg-gradient-to-r from-sky-50/70 via-slate-50 to-indigo-50/40 dark:from-slate-900/60 dark:via-slate-800 dark:to-slate-900/60 border border-sky-100 dark:border-sky-900/50 rounded-2xl flex items-start gap-3 text-right">
+            <span className="text-xl">💡</span>
+            <div className="space-y-1">
+              <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100">
+                كيف يعمل نظام احتساب الاشتراكات الشهرية الجديد (حسب تاريخ التسجيل الفعلي):
+              </h4>
+              <ul className="text-[11px] text-slate-600 dark:text-slate-300 font-sans leading-relaxed list-disc list-inside space-y-1">
+                <li>
+                  <strong>حساب الشهر الفعلي:</strong> يُحسب لكل طالب شهره بالكامل بداية من تاريخ تسجيله (مثلاً طالب سجل يوم 20/09 ينتهي شهره الأول يوم 19/10 ولا يُطالب بأي اشتراك لشهر جديد إلا بعد انتهاء شهره الفعلي).
+                </li>
+                <li>
+                  <strong>الانتقال التلقائي للشهر الجديد:</strong> بمجرد سداد كامل قيمة الاشتراك للشهر، يتم احتساب الشهر التالي تلقائياً وتحديث تاريخ الاستحقاق القادم.
+                </li>
+                <li>
+                  <strong>إدارة المبالغ المتبقية:</strong> عند سداد دفعة جزئية (مثلاً 100 ج.م من أصل 250 ج.م)، يتم قيد الـ 100 ج.م في الخزينة وتسجيل المتبقي (150 ج.م) كمديونية معلقة واضحة مع إمكانية تحصيلها في أي وقت بضغطة زر.
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          </div>
+
+        </div>
+      )}
+
+
+      {/* TAB 2: GENERAL PAYMENTS & HISTORIC LOGS */}
+      {activeTab === 'all_receipts' && (
+        <div className="bg-white dark:bg-slate-800 p-4 sm:p-5 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-50 pb-2">
+            <h3 className="font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100 text-sm">دفتر المدفوعات التاريخي وسجل حركة المعاملات</h3>
+            <span className="text-xxs font-bold text-slate-400">إجمالي السجلات المستردة: {payments.length} إيصالات</span>
+          </div>
+
+          <div className="overflow-x-auto max-h-[60vh] overflow-y-auto border border-gray-100 dark:border-gray-700 rounded-xl shadow-xs mask-edges">
+            
+            {/* Mobile View: High-efficiency Cards */}
+            <div className="md:hidden divide-y divide-slate-100 dark:divide-slate-700/60 bg-white dark:bg-slate-800">
+              {payments.length > 0 ? payments.map(item => {
+                const s = students.find(studentItem => studentItem.id === item.student_id);
+
+                return (
+                  <div key={item.id} className="p-3.5 space-y-3 hover:bg-slate-50/60 dark:hover:bg-slate-800/60 transition-colors">
+                    {/* Top Row: Receipt ID & Name */}
+                    <div className="flex justify-between items-start gap-3">
+                      <div className="min-w-0">
+                        <p className="font-bold text-slate-800 dark:text-slate-100 text-sm leading-snug truncate">{s ? s.name : 'ـ طالب مُستبعد ـ'}</p>
+                        <p className="text-[10px] font-mono font-bold text-indigo-700 dark:text-indigo-400 mt-0.5">#{item.receipt_number}</p>
+                      </div>
+                      <div className="text-left shrink-0">
+                         <span className="font-bold text-sm text-[#0D5C8C] dark:text-sky-400 block">{item.amount.toLocaleString()} ج.م</span>
+                         <span className="text-[10px] text-slate-400 block">{item.payment_date}</span>
+                      </div>
+                    </div>
+
+                    {/* Middle Row: Details */}
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                       <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-sky-50 dark:bg-sky-900/40 text-[#0D5C8C] dark:text-sky-300 border border-sky-200 dark:border-sky-800">
+                          اشتراك الشهر الدراسي
+                        </span>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 dark:bg-slate-700/60 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-600">
+                          {item.month || 'اشتراك شهري'}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                          item.payment_method === 'cash'
+                            ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800'
+                            : item.payment_method === 'card'
+                            ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-300 border border-indigo-200/60 dark:border-indigo-800'
+                            : 'bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-200/60 dark:border-amber-800'
+                        }`}>
+                          {item.payment_method === 'cash' ? 'نقدي' : item.payment_method === 'card' ? 'فيزا POS' : 'حوالة ومسجل'}
+                        </span>
+                    </div>
+
+                    {/* Bottom Row: Actions */}
+                    <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-700/40">
+                      <button
+                        onClick={() => setSelectedReceipt(item)}
+                        className="text-[11px] font-bold text-[#0D5C8C] dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-900/40 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors border border-sky-100 dark:border-sky-800/50"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        عرض الإيصال
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPaymentToDelete(item)}
+                        className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/40 rounded-lg transition-colors"
+                        title="حذف السجل"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              }) : (
+                <div className="p-8 text-center text-slate-400 space-y-2">
+                   <p className="text-xs font-bold text-slate-600 dark:text-slate-300">لا توجد أي معاملات سداد مسجلة حتى الآن.</p>
+                </div>
+              )}
+            </div>
+
+            {/* Desktop Table View */}
+            <div className="hidden md:block">
+              <table className="min-w-full text-right relative border-collapse" dir="rtl">
+              <thead className="sticky top-0 z-20 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-black border-b-2 border-slate-200 dark:border-slate-700 shadow-xs">
+                <tr>
+                  <th className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">رقم الإيصال</th>
+                  <th className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">اسم الطالب</th>
+                  <th className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">نوع البند الرسومي</th>
+                  <th className="p-3 text-center bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">تفصيل الاشتراك</th>
+                  <th className="p-3 text-center bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">تاريخ السداد</th>
+                  <th className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">المبلغ المحصل</th>
+                  <th className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">طريقة السداد</th>
+                  <th className="p-3 text-left bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">التحكم والطباعة</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 text-xs text-slate-700 dark:text-slate-200 font-sans">
+                {payments.map(item => {
+                  const s = students.find(studentItem => studentItem.id === item.student_id);
+
+                  return (
+                    <tr key={item.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50/50 transition-all">
+                      
+                      <td className="p-3 font-mono font-bold text-indigo-700 dark:text-indigo-300">{item.receipt_number}</td>
+                      <td className="p-3 font-bold text-slate-800 dark:text-slate-100">{s ? s.name : 'ـ طالب مُستبعد ـ'}</td>
+                      
+                      {/* Category */}
+                      <td className="p-3">
+                        <span className="px-2.5 py-1 rounded-md text-xs font-bold bg-sky-50 dark:bg-sky-950 text-[#0D5C8C] dark:text-sky-300 border border-sky-200 dark:border-sky-800">
+                          اشتراك الشهر الدراسي
+                        </span>
+                      </td>
+
+                      {/* Detail */}
+                      <td className="p-3 text-center">
+                        <span className="px-2.5 py-1 rounded-md text-xs font-bold bg-slate-100 dark:bg-slate-700/60 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-600 font-sans">
+                          {item.month || 'اشتراك شهري'}
+                        </span>
+                      </td>
+
+                      {/* Date */}
+                      <td className="p-3 text-center text-slate-500 dark:text-slate-400 font-sans text-xs">{item.payment_date}</td>
+                      
+                      {/* Amount */}
+                      <td className="p-3 font-bold text-[#0D5C8C] dark:text-sky-400">{item.amount.toLocaleString()} ج.م</td>
+                      
+                      {/* Method */}
+                      <td className="p-3">
+                        <span className={`px-2.5 py-1 rounded-md text-xs font-bold ${
+                          item.payment_method === 'cash'
+                            ? 'bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                            : item.payment_method === 'card'
+                            ? 'bg-indigo-50 dark:bg-indigo-950 text-indigo-800 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800'
+                            : 'bg-amber-50 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800'
+                        }`}>
+                          {item.payment_method === 'cash' ? 'نقدي' : item.payment_method === 'card' ? 'فيزا POS' : 'حوالة ومسجل'}
+                        </span>
+                      </td>
+
+                      {/* Actions */}
+                      <td className="p-3 text-left">
+                        <div className="flex justify-end gap-1">
+                          <button
+                            onClick={() => setSelectedReceipt(item)}
+                            className="text-xs text-[#0D5C8C] dark:text-sky-300 hover:bg-sky-50 dark:hover:bg-sky-950 px-2.5 py-1 rounded-md flex items-center gap-1 cursor-pointer border border-sky-100 dark:border-sky-800"
+                            title="عرض الإيصال لطباعته"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                            <span>عرض الإيصال</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPaymentToDelete(item)}
+                            className="p-1 text-slate-300 hover:text-red-500 rounded cursor-pointer"
+                            title="حذف السجل"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+
+                    </tr>
+                  );
+                })}
+
+                {payments.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="p-8 text-center text-slate-500 dark:text-slate-400 font-sans">
+                      لا توجد أي معاملات سداد مسجلة حتى الآن.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    )}
+
+
+      {/* QUICK SUBSCRIPTION PAYMENT MODAL */}
+      {showQuickPayModal && quickPayStudent && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-2xl max-w-md w-full overflow-hidden animate-scale-up text-right">
+            
+            {/* Header */}
+            <div className="bg-gradient-to-r from-[#0D5C8C] to-[#1A7FAA] p-4 text-white flex justify-between items-center">
+              <h3 className="font-bold text-sm flex items-center gap-1.5">
+                <Coins className="w-4 h-4 text-amber-300" />
+                <span>سداد اشتراك شهري فوري</span>
+              </h3>
+              <button 
+                type="button" 
+                onClick={() => setShowQuickPayModal(false)} 
+                className="text-white/80 hover:text-white font-bold text-sm bg-black/10 hover:bg-black/20 px-2.5 py-0.5 rounded"
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Form */}
+            <form onSubmit={handleQuickPaySubmit} className="p-4 sm:p-5 space-y-4">
+              
+              <div className="bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl border border-slate-150 space-y-2">
+                <div className="text-slate-400 text-xxs font-bold uppercase">بيانات الطالب والمجموعة:</div>
+                <div className="text-xs font-black text-slate-800 dark:text-slate-100 dark:text-slate-100">{quickPayStudent.name}</div>
+                <div className="text-[10px] text-slate-500 dark:text-slate-400 font-sans">
+                  مجموعة: {classes.find(c => c.id === quickPayStudent.class_id)?.name || 'غير محددة'} • رقم القيد: #{quickPayStudent.registration_id}
+                </div>
+                <div className="text-xs font-bold text-[#0D5C8C] dark:text-sky-300 pt-1">
+                  سداد اشتراك: <span className="underline font-bold text-indigo-700 dark:text-indigo-300">
+                    {quickPayTargetCycle 
+                      ? `${quickPayTargetCycle.label} (${quickPayTargetCycle.periodLabel})` 
+                      : selectedMonth}
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">قيمة الاشتراك المطلوب تحصيلها (ج.م) <span className="text-rose-500">*</span></label>
+                <input
+                  type="number"
+                  min={0}
+                  max={5000}
+                  value={quickPayAmount}
+                  onChange={(e) => setQuickPayAmount(Number(e.target.value))}
+                  className="w-full min-w-0 max-w-full flex-1 text-xs font-sans font-extrabold border border-slate-300 dark:border-slate-600 dark:border-slate-600 px-3 py-2.5 rounded-lg text-[#0D5C8C] text-right focus:border-[#0D5C8C] focus:outline-hidden"
+                  required
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">طريقة التحصيل واستلام المال:</label>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setQuickPayMethod('cash')}
+                    className={`p-2.5 text-xs font-bold rounded-lg border text-center transition-all cursor-pointer ${
+                      quickPayMethod === 'cash'
+                        ? 'bg-emerald-50 border-emerald-500 text-emerald-800'
+                        : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                    }`}
+                  >
+                    نقدي 💵
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQuickPayMethod('card')}
+                    className={`p-2.5 text-xs font-bold rounded-lg border text-center transition-all cursor-pointer ${
+                      quickPayMethod === 'card'
+                        ? 'bg-indigo-50 border-indigo-500 text-indigo-800'
+                        : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                    }`}
+                  >
+                    فيزا POS 💳
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQuickPayMethod('transfer')}
+                    className={`p-2.5 text-xs font-bold rounded-lg border text-center transition-all cursor-pointer ${
+                      quickPayMethod === 'transfer'
+                        ? 'bg-amber-50 border-amber-500 text-amber-800'
+                        : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                    }`}
+                  >
+                    Vodafone 📲
+                  </button>
+                </div>
+              </div>
+
+              {/* SMS Notification simulation option */}
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  id="sms_notify_parent"
+                  type="checkbox"
+                  checked={quickPayNotify}
+                  onChange={(e) => setQuickPayNotify(e.target.checked)}
+                  className="w-4 h-4 text-[#0D5C8C] border-slate-300 dark:border-slate-600 dark:border-slate-600 rounded focus:ring-[#0D5C8C] cursor-pointer"
+                />
+                <label htmlFor="sms_notify_parent" className="text-xs font-semibold text-slate-600 dark:text-slate-300 cursor-pointer select-none">
+                  إرسال رسالة تأكيد الدفع لولي الأمر تلقائياً (صامتاً عبر بوابة الإشعارات) ✉️
+                </label>
+              </div>
+
+              <div className="flex gap-2 border-t border-slate-100 dark:border-slate-700 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setShowQuickPayModal(false)}
+                  className="flex-1 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/50 text-slate-600 dark:text-slate-300 font-bold cursor-pointer"
+                >
+                  إلغاء المعاملة
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-2 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white text-xs font-bold rounded-xl shadow-sm cursor-pointer"
+                >
+                  تأكيد التحصيل واستلام الإيصال ✓
+                </button>
+              </div>
+
+            </form>
+
+          </div>
+        </div>
+      )}
+
+
+      {/* DIGITAL RECEIPT PRINT MODAL */}
+      {selectedReceipt && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-2xl max-w-md w-full p-4 sm:p-6 text-right space-y-4 relative animate-scale-up" dir="rtl">
+            
+            <div className="border-b-2 border-dashed border-slate-100 dark:border-slate-700 pb-3 flex items-center justify-between">
+              <div>
+                <h4 className="font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100 text-sm">إيصال سداد مالي معتمد</h4>
+                <p className="text-[9px] text-slate-400 font-sans font-medium">الأكاديمية التعليمية لإدارة المراكز</p>
+              </div>
+              <span className="text-[10px] bg-emerald-50 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-700 px-3 py-1 font-bold rounded-full">
+                مدفوع كلياً بنجاح ✓
+              </span>
+            </div>
+
+            {/* Printable Frame */}
+            <div className="border border-slate-200 dark:border-slate-700 rounded-xl p-4 bg-slate-50 dark:bg-slate-900/50 space-y-2.5 text-xs font-sans" id="sams-printable-invoice-element">
+              
+              <div className="flex justify-between p-1.5 border-b border-slate-200/60">
+                <span className="text-slate-400">رقم الإيصال</span>
+                <span className="font-mono font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100">{selectedReceipt.receipt_number}</span>
+              </div>
+
+              <div className="flex justify-between p-1.5 border-b border-slate-200/60">
+                <span className="text-slate-400 font-bold">اسم الطالب</span>
+                <span className="font-bold text-slate-900 dark:text-slate-50">
+                  {students.find(st => st.id === selectedReceipt.student_id)?.name || 'ـ طالب كود مالي ـ'}
+                </span>
+              </div>
+
+              <div className="flex justify-between p-1.5 border-b border-slate-200/60">
+                <span className="text-slate-400">سداد اشتراك شهر</span>
+                <span className="font-bold text-indigo-700 dark:text-indigo-300 underline">{selectedReceipt.month || 'ـ'}</span>
+              </div>
+
+              <div className="flex justify-between p-1.5 border-b border-slate-200/60">
+                <span className="text-slate-400">بند الدفع الرسومي</span>
+                <span className="font-semibold text-slate-700 dark:text-slate-200">
+                  اشتراك الشهر الدراسي
+                </span>
+              </div>
+
+              <div className="flex justify-between p-1.5 border-b border-slate-200/60">
+                <span className="text-slate-400">قيمة المعاملة الكلية</span>
+                <span className="font-black text-[#0D5C8C] text-sm">{selectedReceipt.amount.toLocaleString()} ج.م</span>
+              </div>
+
+              <div className="flex justify-between p-1.5 border-b border-slate-200/60">
+                <span className="text-slate-400">تاريخ وتوقيت السداد</span>
+                <span className="text-slate-700 dark:text-slate-200">{selectedReceipt.payment_date}</span>
+              </div>
+
+              <div className="flex justify-between p-1.5">
+                <span className="text-slate-400">وسيلة المعاملة</span>
+                <span className="font-semibold text-slate-700 dark:text-slate-200">
+                  {selectedReceipt.payment_method === 'cash' ? 'نقدي (Cash)' : selectedReceipt.payment_method === 'card' ? 'بطاقة POS' : 'Vodafone cash'}
+                </span>
+              </div>
+
+            </div>
+
+            <div className="bg-slate-50 dark:bg-slate-900/50 p-2.5 rounded-lg text-[9px] text-slate-400 leading-relaxed text-center">
+              تم توثيق هذا الإيصال الإلكتروني رسمياً. شكراً لثقتكم بالأكاديمية التعليمية.
+            </div>
+
+            {/* Buttons */}
+            <div className="flex justify-end gap-2 border-t border-slate-100 dark:border-slate-700 pt-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setPrintTargetReceipt(selectedReceipt);
+                  setShowPrintModal(true);
+                  setSelectedReceipt(null);
+                }}
+                className="px-4 py-2 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white text-xs font-bold rounded-xl cursor-pointer flex items-center gap-1.5"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>أمر طباعة الإيصال الفوري</span></button>
+              <button
+                type="button"
+                onClick={() => setSelectedReceipt(null)}
+                className="px-4 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-200 text-xs font-bold rounded-xl cursor-pointer"
+              >
+                إغلاق المعاينة
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* Custom Payment Deletion Modal */}
+      <AnimatePresence>
+        {paymentToDelete && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in" dir="rtl">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-xl max-w-md w-full p-4 sm:p-6 text-right space-y-4"
+            >
+              <div className="flex items-center gap-3 text-red-600 dark:text-red-400">
+                <div className="w-10 h-10 bg-red-50 dark:bg-red-900/40 rounded-full flex items-center justify-center">
+                  <ShieldAlert className="w-5 h-5 text-red-600 dark:text-red-400" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-950 text-sm">إلغاء وحذف إيصال السداد</h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-sans font-medium">سيتم حذف المعاملة من السجلات المالية وسجل الطالب</p>
+                </div>
+              </div>
+
+              <div className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed font-sans space-y-1.5 py-2 bg-slate-50 dark:bg-slate-900/50 p-3.5 rounded-xl border border-slate-100 dark:border-slate-700">
+                <p>هل أنت متأكد من رغبتك في إلغاء الإيصال رقم: <strong className="text-red-700 dark:text-red-300">"{paymentToDelete.receipt_number}"</strong> بقيمة <strong className="text-red-700 dark:text-red-300">{paymentToDelete.amount} ج.م</strong>؟</p>
+                <p className="text-[10px] text-slate-400">تحذير: سيتم حذف هذا الإيصال نهائياً من السجلات المالية وحسابات السنتر ولن يمكن التراجع عن هذا الإجراء.</p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-50">
+                <button
+                  type="button"
+                  onClick={() => setPaymentToDelete(null)}
+                  className="px-4 py-2 border border-gray-200 dark:border-gray-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-lg text-xs font-bold cursor-pointer"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmDeletePayment}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer"
+                >
+                  تأكيد الحذف والإلغاء
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Direct WhatsApp Modal */}
+      <AnimatePresence>
+        {showWhatsAppModal && whatsAppStudent && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in" dir="rtl">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white dark:bg-slate-800 dark:bg-slate-900 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-2xl max-w-lg w-full p-4 sm:p-6 text-right space-y-4"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between border-b border-gray-100 dark:border-slate-800 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 bg-emerald-100 dark:bg-emerald-900/40 rounded-full flex items-center justify-center text-emerald-600 dark:text-emerald-400">
+                    <MessageSquare className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100 text-sm">
+                      تنبيه واتساب مباشر لولي الأمر
+                    </h3>
+                    <p className="text-[10px] text-slate-400 dark:text-slate-500 font-sans">
+                      {(() => {
+                        const sub = studentSubMap.get(whatsAppStudent.id) || calculateStudentSubscription(whatsAppStudent, payments, activeGradeMonthlyFee);
+                        return `تذكير بمستحقات ${sub.currentCycle.label} (${sub.currentCycle.periodLabel})`;
+                      })()}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowWhatsAppModal(false)}
+                  className="p-1 text-slate-400 hover:text-slate-600 dark:text-slate-300 dark:hover:text-slate-200 rounded-lg cursor-pointer text-sm font-bold"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Student & Parent Info */}
+              {(() => {
+                const sub = studentSubMap.get(whatsAppStudent.id) || calculateStudentSubscription(whatsAppStudent, payments, activeGradeMonthlyFee);
+                return (
+                  <div className="bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-800/40 rounded-xl p-3 grid grid-cols-2 gap-2 text-xs font-sans">
+                    <div>
+                      <span className="text-slate-400 block text-[10px]">اسم الطالب:</span>
+                      <strong className="text-slate-800 dark:text-slate-100 dark:text-slate-200">{whatsAppStudent.name}</strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block text-[10px]">اسم ولي الأمر:</span>
+                      <strong className="text-slate-800 dark:text-slate-100 dark:text-slate-200">{whatsAppStudent.parent_name || 'غير مسجل'}</strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block text-[10px]">هاتف ولي الأمر:</span>
+                      <strong className="font-mono text-emerald-700 dark:text-emerald-400">{whatsAppStudent.parent_phone || whatsAppStudent.phone}</strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block text-[10px]">المبلغ المستحق المطلوب:</span>
+                      <strong className="text-rose-600 dark:text-rose-400 font-bold">
+                        {sub.currentCycle.remainingAmount} ج.م
+                      </strong>
+                      {sub.currentCycle.amountPaid > 0 && (
+                        <span className="text-[10px] text-slate-500 block">
+                          (مسدد منه: {sub.currentCycle.amountPaid} ج.م)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Editable Message Box */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 dark:text-slate-300">
+                  نص رسالة التذكير على واتساب (يمكنك تعديل الرسالة قبل الإرسال):
+                </label>
+                <textarea
+                  rows={6}
+                  value={whatsAppMessage}
+                  onChange={(e) => setWhatsAppMessage(e.target.value)}
+                  className="w-full min-w-0 max-w-full flex-1 text-xs font-sans p-3 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-900/50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 dark:text-slate-100 focus:bg-white dark:bg-slate-800 focus:outline-hidden leading-relaxed"
+                />
+              </div>
+
+              {/* Actions */}
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 dark:border-slate-800 pt-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(whatsAppMessage);
+                    setCopiedToast(true);
+                    setTimeout(() => setCopiedToast(false), 2500);
+                  }}
+                  className="px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold rounded-xl cursor-pointer flex items-center gap-1.5"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>{copiedToast ? 'تم النسخ بنجاح! ✓' : 'نسخ النص'}</span>
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowWhatsAppModal(false)}
+                    className="px-3.5 py-2 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 text-xs font-bold rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/50 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    إلغاء
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // 1. Log to notification audit
+                      samsDb.addNotification({
+                        title: `تنبيه واتساب قسط: ${whatsAppStudent.name}`,
+                        message: `تم إرسال تذكير واتساب لولي الأمر (${whatsAppStudent.parent_name}) على الرقم (${whatsAppStudent.parent_phone}) لقسط شهر (${selectedMonth}).`,
+                        category: 'sms',
+                        recipient_type: 'specific',
+                        recipient_id: whatsAppStudent.id
+                      });
+
+                      // 2. Open WhatsApp link
+                      const phone = whatsAppStudent.parent_phone || whatsAppStudent.phone;
+                      const formatted = formatEgyptianPhoneForWhatsApp(phone);
+                      const url = `https://wa.me/${formatted}?text=${encodeURIComponent(whatsAppMessage)}`;
+                      window.open(url, '_blank');
+
+                      setShowWhatsAppModal(false);
+                      setSuccessInfo(`تم توجيه وتوثيق إرسال التنبيه بواتساب المباشر للطالب: ${whatsAppStudent.name}`);
+                    }}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-md cursor-pointer flex items-center gap-1.5"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>فتح وتوجيه لواتساب المباشر 📱</span>
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+    </div>
+  );
+}

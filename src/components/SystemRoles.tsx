@@ -1,0 +1,410 @@
+import React, { useState, useEffect } from 'react';
+import { Shield, Key, User, Plus, Check, X, Trash2, Edit2, Lock } from 'lucide-react';
+import { samsDb, getActiveSystem } from '../utils/db';
+import { ClassRoom } from '../types';
+
+interface SystemUser {
+  id: string;
+  name: string;
+  role: 'teacher' | 'secretary';
+  password: string;
+  isDefault?: boolean;
+  permissions?: string[];
+  allowed_classes?: string[];
+}
+
+interface SystemRolesProps {
+  onRefreshAllData: () => void;
+}
+
+export default function SystemRoles({ onRefreshAllData }: SystemRolesProps) {
+  const [users, setUsers] = useState<SystemUser[]>([]);
+  const [classes, setClasses] = useState<ClassRoom[]>([]);
+  const [successMsg, setSuccessMsg] = useState('');
+  
+  // form state
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formData, setFormData] = useState<Partial<SystemUser>>({ role: 'secretary', name: '', password: '', permissions: [], allowed_classes: [] });
+  const [userToDelete, setUserToDelete] = useState<string | null>(null);
+  
+  const availableTabs = [
+    { id: 'dashboard', label: 'لوحة التحكم والمؤشرات' },
+    { id: 'students', label: 'إدارة الطلاب' },
+    { id: 'parents', label: 'إدارة أولياء الأمور' },
+    { id: 'barcodes', label: 'باركود الطلاب' },
+    { id: 'attendance', label: 'الحضور والانتظام اليومي' },
+    { id: 'exams', label: 'الامتحانات والواجبات' },
+    { id: 'classes', label: 'المجموعات' },
+    { id: 'fees', label: 'اشتراكات الشهر والحسابات' },
+    { id: 'salaries', label: 'المرتبات والمصروفات' },
+    { id: 'notifications', label: 'بث الرسائل وتواصل الآباء' },
+    { id: 'roles', label: 'الصلاحيات وتدقيق الأمان' },
+    { id: 'audit', label: 'سجل المعاملات الحية' },
+    { id: 'settings', label: 'إعدادات المنصة' },
+  ];
+
+  const handleTogglePermission = (tabId: string) => {
+    const current = formData.permissions || [];
+    if (current.includes(tabId)) {
+      setFormData({ ...formData, permissions: current.filter(id => id !== tabId) });
+    } else {
+      setFormData({ ...formData, permissions: [...current, tabId] });
+    }
+  };
+
+  const handleToggleAllowedClass = (classId: string) => {
+    const current = formData.allowed_classes || [];
+    if (current.includes(classId)) {
+      setFormData({ ...formData, allowed_classes: current.filter(id => id !== classId) });
+    } else {
+      setFormData({ ...formData, allowed_classes: [...current, classId] });
+    }
+  };
+
+  useEffect(() => {
+    loadUsers();
+    setClasses(samsDb.getClasses());
+  }, []);
+
+  useEffect(() => {
+    if (successMsg) {
+      const timer = setTimeout(() => setSuccessMsg(''), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [successMsg]);
+
+  const loadUsers = () => {
+    let saved = samsDb.getSystemUsers();
+
+    if (saved && saved.length > 0) {
+      setUsers(saved);
+    } else {
+      const defaultUsers: SystemUser[] = [
+        { id: 'u-1', name: 'المدير الأكاديمي', role: 'teacher', password: '123', isDefault: true },
+        { id: 'u-2', name: 'سكرتيرة', role: 'secretary', password: '123', isDefault: true }
+      ];
+      setUsers(defaultUsers);
+      samsDb.saveSystemUsers(defaultUsers);
+    }
+  };
+
+  const saveUsers = (newUsers: SystemUser[]) => {
+    setUsers(newUsers);
+    samsDb.saveSystemUsers(newUsers);
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.name || !formData.password) return;
+
+    if (editingId) {
+      const updated = users.map(u => u.id === editingId ? { ...u, name: formData.name!, password: formData.password!, role: formData.role!, permissions: formData.permissions || [], allowed_classes: formData.allowed_classes || [] } as SystemUser : u);
+      saveUsers(updated);
+      setSuccessMsg('تم تعديل بيانات المستخدم بنجاح');
+    } else {
+      const newUser: SystemUser = {
+        id: 'u-' + Date.now(),
+        name: formData.name,
+        role: formData.role as 'teacher' | 'secretary',
+        permissions: formData.permissions || [],
+        allowed_classes: formData.allowed_classes || [],
+        password: formData.password
+      };
+      saveUsers([...users, newUser]);
+      setSuccessMsg('تم إضافة سكرتيرة جديدة بنجاح');
+    }
+    
+    setShowAddForm(false);
+    setEditingId(null);
+    setFormData({ role: 'secretary', name: '', password: '', permissions: [], allowed_classes: [] });
+  };
+
+  const confirmDelete = (id: string) => {
+    setUserToDelete(id);
+  };
+
+  const handleDelete = () => {
+    if (userToDelete) {
+      saveUsers(users.filter(u => u.id !== userToDelete));
+      setSuccessMsg('تم حذف المستخدم بنجاح');
+      setUserToDelete(null);
+    }
+  };
+
+  const handleEdit = (user: SystemUser) => {
+    setFormData({ name: user.name, password: user.password, role: user.role, permissions: user.permissions || [], allowed_classes: user.allowed_classes || [] });
+    setEditingId(user.id);
+    setShowAddForm(true);
+  };
+
+  return (
+    <div className="space-y-6 animate-fade-in" dir="rtl">
+      <div className="bg-white dark:bg-slate-800 p-4 sm:p-6 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100">إدارة المستخدمين والصلاحيات</h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">تغيير كلمات المرور وإضافة حسابات سكرتارية جديدة</p>
+        </div>
+        <button
+          onClick={() => {
+            setShowAddForm(true);
+            setEditingId(null);
+            setFormData({ role: 'secretary', name: '', password: '', permissions: [], allowed_classes: [] });
+          }}
+          className="flex items-center gap-1.5 px-4 py-2 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white text-xs font-bold rounded-xl shadow-xs transition-colors"
+        >
+          <Plus className="w-4 h-4" />
+          <span>إضافة سكرتيرة جديدة</span>
+        </button>
+      </div>
+
+      {successMsg && (
+        <div className="p-4 bg-emerald-50 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-700 text-emerald-800 dark:text-emerald-300 rounded-xl text-xs flex items-center gap-2">
+          <Check className="w-4 h-4 text-emerald-600" />
+          <span className="font-bold">{successMsg}</span>
+        </div>
+      )}
+
+      {showAddForm && (
+        <div className="bg-white dark:bg-slate-800 p-4 sm:p-6 rounded-2xl border-2 border-dashed border-[#0D5C8C]/20 shadow-xs mb-6">
+          <h3 className="font-bold text-[#0D5C8C] text-sm mb-4 border-b border-slate-50 dark:border-slate-800 pb-2">
+            {editingId ? 'تعديل بيانات المستخدم' : 'إضافة سكرتيرة جديدة'}
+          </h3>
+          <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">الاسم</label>
+              <input
+                type="text"
+                value={formData.name}
+                onChange={e => setFormData({ ...formData, name: e.target.value })}
+                className="w-full text-sm border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg focus:outline-none focus:border-[#0D5C8C]"
+                required
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">كلمة المرور (الرمز السري)</label>
+              <input
+                type="text"
+                value={formData.password}
+                onChange={e => setFormData({ ...formData, password: e.target.value })}
+                className="w-full text-sm border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg focus:outline-none focus:border-[#0D5C8C]"
+                required
+              />
+            </div>
+
+            {!editingId && (
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">الصلاحية</label>
+                <select
+                  value={formData.role}
+                  onChange={e => setFormData({ ...formData, role: e.target.value as any })}
+                  className="w-full text-sm border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg focus:outline-none focus:border-[#0D5C8C]"
+                >
+                  <option value="secretary">سكرتيرة</option>
+                  <option value="teacher">مدير النظام (أدمن)</option>
+                </select>
+              </div>
+            )}
+            {editingId && (
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">تغيير الصلاحية الأساسية</label>
+                <select
+                  value={formData.role}
+                  onChange={e => setFormData({ ...formData, role: e.target.value as any })}
+                  className="w-full text-sm border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg focus:outline-none focus:border-[#0D5C8C]"
+                >
+                  <option value="secretary">سكرتيرة</option>
+                  <option value="teacher">مدير النظام (أدمن)</option>
+                </select>
+              </div>
+            )}
+            
+            <div className="md:col-span-3 mt-4 border-t border-slate-100 dark:border-slate-700 pt-4">
+              <label className="block text-sm font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100 mb-3 flex items-center gap-2">
+                <Shield className="w-4 h-4 text-[#0D5C8C]" />
+                التحكم المخصص في الصفحات المسموحة (اختر ما يمكنه رؤيته)
+              </label>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {availableTabs.map(tab => {
+                  const isSelected = formData.permissions?.includes(tab.id);
+                  return (
+                    <div 
+                      key={tab.id}
+                      onClick={() => handleTogglePermission(tab.id)}
+                      className={`cursor-pointer p-3 rounded-xl border flex items-center gap-2 transition-all ${
+                        isSelected 
+                          ? 'bg-sky-50 border-sky-200 text-[#0D5C8C]' 
+                          : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                      }`}
+                    >
+                      <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${
+                        isSelected ? 'bg-[#0D5C8C] border-[#0D5C8C]' : 'border-slate-300 dark:border-slate-600'
+                      }`}>
+                        {isSelected && <Check className="w-3 h-3 text-white" />}
+                      </div>
+                      <span className="text-xs font-bold">{tab.label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-2">* إذا لم تقم بتحديد أي صفحات، فسيتم تطبيق الصلاحيات الافتراضية الخاصة بالدور المختار.</p>
+            </div>
+
+            {formData.role === 'secretary' && classes.length > 0 && (
+              <div className="md:col-span-3 mt-4 border-t border-slate-100 dark:border-slate-700 pt-4">
+                <div className="flex items-center justify-between mb-3">
+                  <label className="block text-sm font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100 flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-emerald-600" />
+                    المجموعات المسموح بإدارتها (للسكرتارية)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (formData.allowed_classes?.length === classes.length) {
+                        setFormData({ ...formData, allowed_classes: [] });
+                      } else {
+                        setFormData({ ...formData, allowed_classes: classes.map(c => c.id) });
+                      }
+                    }}
+                    className="text-xs font-bold text-[#0D5C8C] hover:text-[#1A7FAA] bg-sky-50 hover:bg-sky-100 dark:bg-sky-900/30 dark:hover:bg-sky-900/50 px-3 py-1 rounded-lg transition-colors"
+                  >
+                    {formData.allowed_classes?.length === classes.length ? 'إلغاء تحديد الكل' : 'تحديد الكل'}
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {classes.map(cls => {
+                    const isSelected = formData.allowed_classes?.includes(cls.id);
+                    return (
+                      <div 
+                        key={cls.id}
+                        onClick={() => handleToggleAllowedClass(cls.id)}
+                        className={`cursor-pointer p-3 rounded-xl border flex items-center justify-between gap-2 transition-all ${
+                          isSelected 
+                            ? 'bg-emerald-50 border-emerald-200 text-emerald-700' 
+                            : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                        }`}
+                      >
+                        <span className="text-xs font-bold leading-tight flex-1">{cls.name} ({cls.grade_level})</span>
+                        <div className={`w-4 h-4 rounded-full border shrink-0 flex items-center justify-center ${
+                          isSelected ? 'bg-emerald-600 border-emerald-600' : 'border-slate-300 dark:border-slate-600'
+                        }`}>
+                          {isSelected && <Check className="w-3 h-3 text-white" />}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-2">* إذا لم تقم بتحديد أي مجموعات، سيكون مسموحاً لها برؤية جميع المجموعات.</p>
+              </div>
+            )}
+            <div className="md:col-span-3 flex justify-end gap-2 mt-2">
+              <button
+                type="button"
+                onClick={() => setShowAddForm(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 rounded-lg"
+              >
+                إلغاء
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 text-xs font-bold text-white bg-[#0D5C8C] hover:bg-[#1A7FAA] rounded-lg flex items-center gap-1.5"
+              >
+                <Check className="w-4 h-4" />
+                حفظ البيانات
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm overflow-hidden">
+        <div className="overflow-x-auto max-h-[60vh] overflow-y-auto mask-edges">
+          <table className="w-full text-right text-sm relative border-collapse">
+            <thead className="sticky top-0 z-20 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-black border-b-2 border-slate-200 dark:border-slate-700 shadow-xs">
+              <tr>
+                <th className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">الاسم</th>
+                <th className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">نوع الصلاحية</th>
+                <th className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">كلمة المرور</th>
+                <th className="p-4 text-center bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">الإجراءات</th>
+              </tr>
+            </thead>
+          <tbody className="divide-y divide-gray-100">
+            {users.map(u => (
+              <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50/50">
+                <td className="p-4 font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100">{u.name}</td>
+                <td className="p-4">
+                  {u.role === 'teacher' ? (
+                    <span className="bg-[#0D5C8C]/10 text-[#0D5C8C] px-2.5 py-1 rounded-md text-xs font-bold flex items-center gap-1 w-max">
+                      <Shield className="w-3 h-3" /> المدير الأكاديمي
+                    </span>
+                  ) : (
+                    <span className="bg-sky-100 text-sky-700 dark:text-sky-300 px-2.5 py-1 rounded-md text-xs font-bold flex items-center gap-1 w-max">
+                      <User className="w-3 h-3" /> سكرتيرة
+                    </span>
+                  )}
+                </td>
+                <td className="p-4 font-mono text-slate-600 dark:text-slate-300">
+                  <span className="bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-xs">{u.password}</span>
+                </td>
+                <td className="p-4">
+                  <div className="flex items-center justify-center gap-2">
+                    <button
+                      onClick={() => handleEdit(u)}
+                      className="p-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 rounded-lg transition-colors"
+                      title="تغيير كلمة المرور أو الاسم"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                    {u.id !== 'u-1' && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDelete(u.id); }}
+                        className="p-1.5 bg-rose-50 dark:bg-rose-900/40 hover:bg-rose-100 text-rose-600 dark:text-rose-400 rounded-lg transition-colors"
+                        title="حذف"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+      {userToDelete && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-sm overflow-hidden shadow-xl animate-scale-up">
+            <div className="bg-rose-50 dark:bg-rose-900/40 p-4 sm:p-6 flex flex-col items-center justify-center text-center">
+              <div className="w-16 h-16 bg-white dark:bg-slate-800 rounded-full flex items-center justify-center shadow-sm mb-4">
+                <Trash2 className="w-8 h-8 text-rose-500" />
+              </div>
+              <h3 className="text-sm sm:text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100 mb-2">تأكيد الحذف</h3>
+              <p className="text-sm text-slate-600 dark:text-slate-300">
+                هل أنت متأكد من حذف هذا المستخدم نهائياً؟ لا يمكن التراجع عن هذه الخطوة.
+              </p>
+            </div>
+            <div className="p-4 bg-gray-50 flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setUserToDelete(null)}
+                className="flex-1 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors text-sm"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDelete(); }}
+                className="flex-1 py-2.5 bg-rose-500 text-white font-bold rounded-xl hover:bg-rose-600 transition-colors shadow-sm text-sm"
+              >
+                نعم، احذف
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

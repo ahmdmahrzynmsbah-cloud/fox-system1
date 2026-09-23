@@ -1,0 +1,650 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect } from 'react';
+import { samsDb } from '../utils/db';
+import { Student, ClassRoom } from '../types';
+import { Search, Plus, Filter, Edit, Trash2, ShieldAlert, CheckCircle, Eye, X, Phone, User, Users, MessageSquare, Heart, Sparkles, Send, Info, Smartphone } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { useSamsDbSync } from '../hooks/useSamsDbSync';
+import { normalizePhoneDigits, validateEgyptianPhone } from '../utils/phoneUtils';
+
+interface ParentRecord {
+  id: string;
+  parent_name: string;
+  parent_phone: string;
+  children: Student[];
+}
+
+export default function ParentsList() {
+  const [parents, setParents] = useState<ParentRecord[]>([]);
+  const [classes, setClasses] = useState<ClassRoom[]>([]);
+  
+  // Search & Filters state
+  const [searchTerm, setSearchTerm] = useState('');
+  const [gradeFilter, setGradeFilter] = useState('all');
+  const [multiChildrenFilter, setMultiChildrenFilter] = useState('all'); // all, multi, single
+
+  // Form states
+  const [showEditForm, setShowEditForm] = useState(false);
+  const [selectedParent, setSelectedParent] = useState<ParentRecord | null>(null);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
+
+  // Editing values
+  const [editName, setEditName] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  useEffect(() => {
+    if (successMessage) {
+      const timer = setTimeout(() => {
+        setSuccessMessage('');
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [successMessage]);
+
+  useEffect(() => {
+    if (errorMessage) {
+      const timer = setTimeout(() => {
+        setErrorMessage('');
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [errorMessage]);
+
+  useSamsDbSync(() => {
+    loadData();
+  });
+
+  const isDummyPhone = (phone: string): boolean => {
+    const clean = (phone || '').replace(/\D/g, '');
+    if (!clean || clean.length < 6) return true;
+    if (/^(\d)\1+$/.test(clean)) return true;
+    const dummyList = [
+      '01000000000', '0100000000', '0123456789', '01234567890',
+      '123456789', '0000000000', '00000000', '01111111111', '01222222222'
+    ];
+    return dummyList.includes(clean);
+  };
+
+  const getParentKey = (student: Student): string => {
+    const pName = (student.parent_name || '').trim();
+    const pPhone = (student.parent_phone || '').trim();
+    const dummy = isDummyPhone(pPhone);
+    
+    const isGenericName = !pName || pName === 'ولي أمر غير مسجل';
+
+    if (isGenericName) {
+      if (!dummy) {
+        return `phone_only_${pPhone}`;
+      }
+      return `student_indiv_${student.id}`;
+    }
+
+    const normName = pName.toLowerCase();
+    if (!dummy) {
+      return `parent_${normName}_${pPhone}`;
+    }
+    return `parent_${normName}_nodummy`;
+  };
+
+  const loadData = () => {
+    const studentsList = samsDb.getVisibleStudents();
+    const classList = samsDb.getVisibleClasses();
+    setClasses(classList);
+
+    // Group students correctly by parent identity
+    const parentMap: Record<string, ParentRecord> = {};
+    
+    studentsList.forEach(student => {
+      const pName = (student.parent_name || 'ولي أمر غير مسجل').trim();
+      const pPhone = (student.parent_phone || '').trim();
+      const key = getParentKey(student);
+      
+      if (!parentMap[key]) {
+        parentMap[key] = {
+          id: key,
+          parent_name: pName,
+          parent_phone: pPhone,
+          children: []
+        };
+      }
+      parentMap[key].children.push(student);
+    });
+
+    setParents(Object.values(parentMap));
+  };
+
+  const handleEditClick = (parent: ParentRecord) => {
+    setSelectedParent(parent);
+    setEditName(parent.parent_name);
+    setEditPhone(parent.parent_phone);
+    setShowEditForm(true);
+    setErrorMessage('');
+  };
+
+  const handleUpdateParentSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage('');
+    setSuccessMessage('');
+
+    if (!editName.trim()) {
+      setErrorMessage('يرجى إدخال اسم ولي الأمر.');
+      return;
+    }
+
+    const phoneErr = validateEgyptianPhone(editPhone, 'رقم هاتف ولي الأمر', true);
+    if (phoneErr) {
+      setErrorMessage(phoneErr);
+      return;
+    }
+
+    if (!selectedParent) return;
+
+    const cleanedPhone = normalizePhoneDigits(editPhone.trim());
+
+    // We will update parent name and phone for all students previously linked to this parent
+    const studentsList = samsDb.getVisibleStudents();
+    let updatedCount = 0;
+
+    studentsList.forEach(student => {
+      const currentKey = getParentKey(student);
+
+      if (currentKey === selectedParent.id) {
+        const updatedStudent: Student = {
+          ...student,
+          parent_name: editName.trim(),
+          parent_phone: cleanedPhone
+        };
+        const res = samsDb.updateStudent(updatedStudent);
+        if (res.success) {
+          updatedCount++;
+        }
+      }
+    });
+
+    if (updatedCount > 0) {
+      setSuccessMessage(`تم تحديث بيانات ولي الأمر بنجاح وتعميم التعديل على عدد (${updatedCount}) طلاب مرتبطة به.`);
+      setShowEditForm(false);
+      setSelectedParent(null);
+      loadData();
+    } else {
+      setErrorMessage('فشل تحديث البيانات، لم يتم العثور على طلاب مرتبطين.');
+    }
+  };
+
+  // Filter Logic
+  const filteredParents = parents.filter(p => {
+    const cleanSearch = searchTerm.trim().toLowerCase();
+    const matchesSearch = 
+      p.parent_name.toLowerCase().includes(cleanSearch) || 
+      p.parent_phone.includes(cleanSearch) ||
+      p.children.some(child => 
+        child.name.toLowerCase().includes(cleanSearch) || 
+        child.registration_id.includes(cleanSearch)
+      );
+
+    const matchesGrade = gradeFilter === 'all' || p.children.some(child => child.grade_level === gradeFilter);
+    
+    let matchesMulti = true;
+    if (multiChildrenFilter === 'multi') {
+      matchesMulti = p.children.length > 1;
+    } else if (multiChildrenFilter === 'single') {
+      matchesMulti = p.children.length === 1;
+    }
+
+    return matchesSearch && matchesGrade && matchesMulti;
+  });
+
+  // Summary Metrics
+  const totalParents = parents.length;
+  const multiChildrenParentsCount = parents.filter(p => p.children.length > 1).length;
+  const unlinkedParentsCount = parents.filter(p => !p.parent_name || p.parent_name === 'ولي أمر غير مسجل' || !p.parent_phone).length;
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="space-y-6" 
+      id="sams_parents_module"
+    >
+      {/* Title & Action Panel */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white dark:bg-slate-800 p-4 sm:p-5 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-2xs">
+        <div>
+          <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100 flex items-center gap-2">
+            <Users className="w-5 h-5 text-[#0D5C8C]" />
+            إدارة سجلات أولياء الأمور والتواصل المشترك
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+            متابعة الآباء، أرقام الطوارئ، الرسائل التلقائية، والربط العائلي المتعدد للطلاب الأشقاء
+          </p>
+        </div>
+      </div>
+
+      {/* Metrics Row */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {/* Metric 1 */}
+        <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-3xs flex items-center gap-4">
+          <div className="w-12 h-12 rounded-xl bg-blue-50 dark:bg-blue-900/40 flex items-center justify-center text-[#0D5C8C] shrink-0 border border-blue-100 dark:border-blue-800">
+            <Users className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">إجمالي أولياء الأمور</div>
+            <div className="text-xl font-extrabold text-slate-800 dark:text-slate-100 dark:text-slate-100 mt-0.5">{totalParents} ولي أمر</div>
+          </div>
+        </div>
+
+        {/* Metric 2 */}
+        <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-3xs flex items-center gap-4">
+          <div className="w-12 h-12 rounded-xl bg-amber-50 dark:bg-amber-900/40 flex items-center justify-center text-amber-600 dark:text-amber-400 shrink-0 border border-amber-100 dark:border-amber-800">
+            <Sparkles className="w-5 h-5 animate-pulse" />
+          </div>
+          <div>
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">عائلات متعددة الأبناء</div>
+            <div className="text-xl font-extrabold text-slate-800 dark:text-slate-100 dark:text-slate-100 mt-0.5">{multiChildrenParentsCount} عائلات أشقاء</div>
+          </div>
+        </div>
+
+        {/* Metric 3 */}
+        <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-3xs flex items-center gap-4">
+          <div className="w-12 h-12 rounded-xl bg-rose-50 dark:bg-rose-900/40 flex items-center justify-center text-rose-600 dark:text-rose-400 shrink-0 border border-rose-100 dark:border-rose-800">
+            <ShieldAlert className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">أولياء أمور غير مكتملي البيانات</div>
+            <div className="text-xl font-extrabold text-slate-800 dark:text-slate-100 dark:text-slate-100 mt-0.5">{unlinkedParentsCount} سجلات معلقة</div>
+          </div>
+        </div>
+      </div>
+
+      {/* SUCCESS / ERROR ALERTS */}
+      {successMessage && (
+        <div className="p-4 bg-emerald-50 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-700 text-emerald-800 dark:text-emerald-300 rounded-xl text-xs flex items-center gap-2 animate-fade-in">
+          <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+          <span className="font-semibold">{successMessage}</span>
+          <button className="mr-auto text-emerald-600 font-bold hover:underline" onClick={() => setSuccessMessage('')}>إغلاق</button>
+        </div>
+      )}
+
+      {errorMessage && (
+        <div className="p-4 bg-red-50 dark:bg-red-900/40 border border-red-200 text-[#C0152A] rounded-xl text-xs flex items-center gap-2">
+          <ShieldAlert className="w-4 h-4 text-[#E8192C] shrink-0" />
+          <span className="font-semibold">{errorMessage}</span>
+          <button className="mr-auto text-[#C0152A] font-bold hover:underline" onClick={() => setErrorMessage('')}>إغلاق</button>
+        </div>
+      )}
+
+      {/* Edit Form Modal Overlay */}
+      {showEditForm && selectedParent && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-[100] animate-fade-in" dir="rtl">
+          <div className="bg-white dark:bg-slate-800 border border-[#0D5C8C]/20 p-4 sm:p-6 rounded-2xl shadow-2xl max-w-xl w-full my-auto" id="parent_edit_form_container">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-700 pb-3 mb-4">
+              <h3 className="font-bold text-[#0D5C8C] text-sm flex items-center gap-2">
+                <Edit className="w-4 h-4" />
+                تعديل بيانات ولي الأمر: {selectedParent.parent_name}
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowEditForm(false);
+                  setSelectedParent(null);
+                }}
+                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-sm font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+            <form onSubmit={handleUpdateParentSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:p-5">
+              {errorMessage && (
+                <div className="md:col-span-2 p-3 bg-rose-50 dark:bg-rose-900/40 border border-rose-200 dark:border-rose-700 text-rose-700 dark:text-rose-300 rounded-xl flex items-center gap-2 text-xs font-bold">
+                  <ShieldAlert className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
+                  <span>{errorMessage}</span>
+                </div>
+              )}
+              
+              {/* Parent Name */}
+              <div className="space-y-1">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">اسـم ولي الأمر بالكامل <span className="text-rose-500">*</span></label>
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  placeholder="اسم ولي الأمر رباعي"
+                  className="w-full text-xs font-sans border border-slate-200 dark:border-slate-700 px-3 py-2.5 rounded-lg focus:outline-hidden focus:border-[#0D5C8C] text-right"
+                  dir="rtl"
+                  required
+                />
+              </div>
+
+              {/* Parent Phone */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">رقم هاتف التواصل (واتساب / إشعارات) <span className="text-rose-500">*</span></label>
+                  <button type="button" onClick={() => setEditPhone('لا يوجد')} className="text-[10px] font-bold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/60 hover:bg-amber-100 px-1.5 py-0.5 rounded border border-amber-200/80 dark:border-amber-800/80 transition-colors">لا يوجد</button>
+                </div>
+                <input
+                  type="text"
+                  value={editPhone}
+                  onChange={(e) => setEditPhone(normalizePhoneDigits(e.target.value))}
+                  placeholder="مثال: 01012345678"
+                  className="w-full text-xs font-sans border border-slate-200 dark:border-slate-700 px-3 py-2.5 rounded-lg focus:outline-hidden focus:border-[#0D5C8C]"
+                  dir="auto"
+                  required
+                />
+                {editPhone !== 'لا يوجد' && (
+                  <div className="mt-1.5 flex items-start gap-1.5 p-2 bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700/50 rounded-lg">
+                    <Info className="w-3 h-3 text-slate-400 mt-0.5 shrink-0" />
+                    <p className="text-[10px] text-slate-500 leading-relaxed">
+                      إذا كان الرقم غير متاح، اضغط <button type="button" onClick={() => setEditPhone('لا يوجد')} className="font-bold text-[#0D5C8C] hover:underline cursor-pointer">هنا</button> لتسجيله كـ "لا يوجد"
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className="md:col-span-2 flex items-center justify-between p-3.5 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-300">
+                <span>سيتم تطبيق هذا التعديل تلقائياً على جميع الطلاب التابعين لهذا الرقم أو الاسم.</span>
+                <span className="font-bold text-[#0D5C8C]">الطلاب المتأثرين بالتعديل: ({selectedParent.children.length})</span>
+              </div>
+
+              <div className="md:col-span-2 flex justify-end gap-3 border-t border-slate-100 dark:border-slate-700 pt-4 mt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowEditForm(false);
+                    setSelectedParent(null);
+                  }}
+                  className="px-4 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800/50 text-slate-600 dark:text-slate-300 font-bold shrink-0 cursor-pointer"
+                >
+                  إلغاء الأمر
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white text-xs font-bold rounded-lg shrink-0 cursor-pointer"
+                >
+                  حفظ التحديثات وتعميمها
+                </button>
+              </div>
+
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Main Grid: Filters & Parent Table / Cards */}
+      <div className="bg-white dark:bg-slate-800 p-4 sm:p-5 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm space-y-4">
+        
+        {/* Filters Panel */}
+        <div className="flex flex-col gap-3 w-full pb-2 pt-1">
+          {/* Search Box */}
+          <div className="relative w-full">
+            <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              placeholder="ابحث باسم ولي الأمر، هاتف، أو اسم الطالب..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full font-sans text-xs border border-slate-200 dark:border-slate-700 pr-9 pl-3 h-10 rounded-xl focus:outline-hidden focus:border-[#0D5C8C] text-right"
+              dir="rtl"
+            />
+          </div>
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 w-full no-scrollbar mask-edges">
+          {/* Grade Filter of Children */}
+          <select
+            value={gradeFilter}
+            onChange={(e) => setGradeFilter(e.target.value)}
+            className="shrink-0 min-w-max font-sans text-xs border border-slate-200 dark:border-slate-700 h-10 px-3 rounded-xl focus:outline-hidden focus:border-[#0D5C8C] text-right bg-white dark:bg-slate-800"
+          >
+            <option value="all">كل المراحل الدراسية للأبناء</option>
+            <option value="الأول الإعدادي">الأول الإعدادي</option>
+            <option value="الثاني الإعدادي">الثاني الإعدادي</option>
+            <option value="الثالث الإعدادي">الثالث الإعدادي</option>
+            <option value="الأول الثانوي">الأول الثانوي</option>
+            <option value="الثاني الثانوي">الثاني الثانوي</option>
+            <option value="الثالث الثانوي">الثالث الثانوي</option>
+          </select>
+          {/* Multi Siblings Filter */}
+          <select
+            value={multiChildrenFilter}
+            onChange={(e) => setMultiChildrenFilter(e.target.value)}
+            className="shrink-0 min-w-max font-sans text-xs border border-slate-200 dark:border-slate-700 h-10 px-3 rounded-xl focus:outline-hidden focus:border-[#0D5C8C] text-right bg-white dark:bg-slate-800"
+          >
+            <option value="all">كل أولياء الأمور</option>
+            <option value="multi">من لديهم أكثر من ابن في السنتر (أشقاء)</option>
+            <option value="single">من لديهم ابن واحد فقط</option>
+          </select>
+          </div>
+        </div>
+
+        {/* Mobile Cards View */}
+        <div className="block md:hidden space-y-3">
+          {filteredParents.length === 0 ? (
+            <div className="p-8 text-center text-slate-400 font-bold bg-white dark:bg-slate-800 rounded-xl border border-slate-100 dark:border-slate-700 shadow-sm">
+              لا يوجد نتائج مطابقة لاستعلام الفرز الحالي لأولياء الأمور.
+            </div>
+          ) : (
+            filteredParents.map(parent => (
+              <div key={parent.id} className="p-4 bg-white dark:bg-slate-800 rounded-xl border border-slate-100 dark:border-slate-700 shadow-sm space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-full bg-[#0D5C8C]/10 flex items-center justify-center text-[#0D5C8C] shrink-0 font-bold">
+                      {parent.parent_name[0] || 'و'}
+                    </div>
+                    <div>
+                      <div className="font-bold text-slate-800 dark:text-slate-100 text-sm">{parent.parent_name}</div>
+                      {parent.children.length > 1 && (
+                        <span className="inline-flex items-center gap-1 mt-1 text-[9px] font-bold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/40 border border-amber-100 dark:border-amber-800 px-1.5 py-0.5 rounded-sm">
+                          <Users className="w-2.5 h-2.5" />
+                          رابط أشقاء عائلي
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <span className="inline-flex items-center gap-1 text-[9px] font-extrabold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/40 border border-emerald-100 dark:border-emerald-800 px-2 py-1 rounded-full whitespace-nowrap h-fit">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    تواصل فعال
+                  </span>
+                </div>
+
+                <div className="bg-slate-50 dark:bg-slate-900/50 p-2.5 rounded-lg border border-slate-100 dark:border-slate-700">
+                  <div className="text-xs text-slate-500 dark:text-slate-400 mb-2 font-bold">الطلاب التابعين (الأبناء):</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {parent.children.map(child => (
+                      <span 
+                        key={child.id}
+                        className="inline-flex items-center gap-1 px-2 py-1 bg-sky-50 dark:bg-sky-900/40 text-[#0D5C8C] border border-sky-100 dark:border-sky-800 rounded-lg font-bold text-[10px] shadow-3xs"
+                      >
+                        {child.name} <span className="text-slate-400 font-semibold font-sans">({child.grade_level})</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-700">
+                  <div className="font-mono text-sm text-slate-600 dark:text-slate-300">
+                    {parent.parent_phone ? (
+                      <span className="flex items-center gap-1.5">
+                        <Phone className="w-3.5 h-3.5 text-[#0D5C8C]" />
+                        <span dir="ltr">{parent.parent_phone}</span>
+                      </span>
+                    ) : (
+                      <span className="text-rose-600 dark:text-rose-400 font-bold bg-rose-50 dark:bg-rose-900/40 px-2 py-0.5 rounded border border-rose-100 dark:border-rose-800 text-xs">⚠️ غير متوفر</span>
+                    )}
+                  </div>
+                  
+                  <div className="flex items-center gap-1">
+                    <a
+                      href={parent.parent_phone ? `sms:${parent.parent_phone}?body=${encodeURIComponent(`السلام عليكم ورحمة الله وبركاته،\nالسيد ولي أمر الطالب/ة: (${(parent as any).student_names?.join(' - ') || ''})\nتحية طيبة وبعد من ${typeof window !== 'undefined' && localStorage.getItem('sams_active_system') === 'alsafa' ? 'سيستم الصفا للمواد الشرعية' : 'سنتر الدكتور في اللغة العربية'}...\n\n${typeof window !== 'undefined' && localStorage.getItem('sams_active_system') === 'alsafa' ? '#سيستم الصفا للمواد الشرعية' : '#سيستم الدكتور في اللغة العربية'}`)}` : '#'}
+                      title="إرسال رسالة نصية SMS"
+                      className={`p-2 rounded-lg transition-colors cursor-pointer ${
+                        parent.parent_phone 
+                          ? 'text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-900/40 hover:text-sky-700' 
+                          : 'text-slate-300 pointer-events-none'
+                      }`}
+                    >
+                      <Smartphone className="w-4 h-4" />
+                    </a>
+                    <a
+                      href={parent.parent_phone ? `https://wa.me/${parent.parent_phone.startsWith('0') ? '2' + parent.parent_phone : parent.parent_phone}?text=${encodeURIComponent(`السلام عليكم ورحمة الله وبركاته،\nالسيد ولي أمر الطالب/ة: (${(parent as any).student_names?.join(' - ') || ''})\nتحية طيبة وبعد من ${typeof window !== 'undefined' && localStorage.getItem('sams_active_system') === 'alsafa' ? 'سيستم الصفا للمواد الشرعية' : 'سنتر الدكتور في اللغة العربية'}...\n\n${typeof window !== 'undefined' && localStorage.getItem('sams_active_system') === 'alsafa' ? '#سيستم الصفا للمواد الشرعية' : '#سيستم الدكتور في اللغة العربية'}`)}` : '#'}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="مراسلة سريعة عبر الواتساب"
+                      className={`p-2 rounded-lg transition-colors cursor-pointer ${
+                        parent.parent_phone 
+                          ? 'text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/40 hover:text-emerald-700' 
+                          : 'text-slate-300 pointer-events-none'
+                      }`}
+                    >
+                      <MessageSquare className="w-4 h-4" />
+                    </a>
+                    <button
+                      onClick={() => handleEditClick(parent)}
+                      title="تعديل بيانات ولي الأمر والتواصل"
+                      className="p-2 text-slate-500 dark:text-slate-400 hover:text-[#0D5C8C] hover:bg-slate-100 dark:hover:bg-slate-800/80 rounded-lg transition-colors cursor-pointer"
+                    >
+                      <Edit className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Desktop Database Grid */}
+        <div className="hidden md:block overflow-x-auto max-h-[65vh] overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-xl shadow-xs mask-edges">
+          <table className="min-w-full text-right relative border-collapse" dir="rtl">
+            <thead className="sticky top-0 z-20">
+              <tr className="bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-xs font-black border-b-2 border-slate-300 dark:border-slate-700 shadow-xs">
+                <th className="p-4 sticky top-0 z-20 bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100 whitespace-nowrap shadow-xs">اسم ولي الأمر</th>
+                <th className="p-4 sticky top-0 z-20 bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100 whitespace-nowrap shadow-xs">هاتف التواصل للطوارئ</th>
+                <th className="p-4 sticky top-0 z-20 bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100 whitespace-nowrap shadow-xs">الطلاب التابعين (الأبناء)</th>
+                <th className="p-4 sticky top-0 z-20 bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100 whitespace-nowrap shadow-xs">حالة الحضور الإجمالية للأبناء</th>
+                <th className="p-4 text-left sticky top-0 z-20 bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100 whitespace-nowrap shadow-xs">التحكم والإجراءات</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 text-xs">
+              {filteredParents.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="p-8 text-center text-slate-400">
+                    لا يوجد نتائج مطابقة لاستعلام الفرز الحالي لأولياء الأمور.
+                  </td>
+                </tr>
+              ) : (
+                <AnimatePresence>
+                  {filteredParents.map(parent => {
+                    return (
+                      <motion.tr 
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        layout
+                        key={parent.id} 
+                        className="hover:bg-slate-50 dark:hover:bg-slate-800/50/50 transition-all"
+                      >
+                        {/* Parent Name */}
+                        <td className="p-4">
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-8 h-8 rounded-full bg-[#0D5C8C]/10 flex items-center justify-center text-[#0D5C8C] shrink-0 font-bold">
+                              {parent.parent_name[0] || 'و'}
+                            </div>
+                            <div>
+                              <div className="font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100 text-xs sm:text-xs">{parent.parent_name}</div>
+                              {parent.children.length > 1 && (
+                                <span className="inline-flex items-center gap-1 mt-1 text-[9px] font-bold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/40 border border-amber-100 dark:border-amber-800 px-1.5 py-0.5 rounded-sm">
+                                  <Users className="w-2.5 h-2.5" />
+                                  رابط أشقاء عائلي
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Phone */}
+                        <td className="p-4 font-mono text-slate-600 dark:text-slate-300">
+                          {parent.parent_phone ? (
+                            <span className="flex items-center gap-1.5">
+                              <Phone className="w-3.5 h-3.5 text-[#0D5C8C]" />
+                              {parent.parent_phone}
+                            </span>
+                          ) : (
+                            <span className="text-rose-600 dark:text-rose-400 font-bold bg-rose-50 dark:bg-rose-900/40 px-2 py-0.5 rounded border border-rose-100 dark:border-rose-800">⚠️ غير متوفر</span>
+                          )}
+                        </td>
+
+                        {/* Children List */}
+                        <td className="p-4">
+                          <div className="flex flex-wrap gap-1.5 max-w-[280px]">
+                            {parent.children.map(child => (
+                              <span 
+                                key={child.id}
+                                className="inline-block px-2.5 py-1 bg-sky-50 dark:bg-sky-900/40 text-[#0D5C8C] border border-sky-100 dark:border-sky-800 rounded-lg font-bold text-[10px] shadow-3xs"
+                              >
+                                {child.name} <span className="text-slate-400 font-semibold font-sans">({child.grade_level})</span>
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+
+                        {/* Aggregate Status Indicator */}
+                        <td className="p-4">
+                          <span className="inline-flex items-center gap-1 text-[10px] font-extrabold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/40 border border-emerald-100 dark:border-emerald-800 px-2 py-1 rounded-full">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                            تواصل فعال وحضور منتظم
+                          </span>
+                        </td>
+
+                        {/* Actions */}
+                        <td className="p-4 text-left flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => handleEditClick(parent)}
+                            title="تعديل بيانات ولي الأمر والتواصل"
+                            className="p-1.5 text-slate-500 dark:text-slate-400 hover:text-[#0D5C8C] hover:bg-slate-100 dark:hover:bg-slate-800/80 rounded-lg transition-colors cursor-pointer"
+                          >
+                            <Edit className="w-4 h-4" />
+                          </button>
+                          <a
+                            href={parent.parent_phone ? `https://wa.me/${parent.parent_phone.startsWith('0') ? '2' + parent.parent_phone : parent.parent_phone}?text=${encodeURIComponent(`السلام عليكم ورحمة الله وبركاته،\nالسيد ولي أمر الطالب/ة: (${(parent as any).student_names?.join(' - ') || ''})\nتحية طيبة وبعد من ${typeof window !== 'undefined' && localStorage.getItem('sams_active_system') === 'alsafa' ? 'سيستم الصفا للمواد الشرعية' : 'سنتر الدكتور في اللغة العربية'}...\n\n${typeof window !== 'undefined' && localStorage.getItem('sams_active_system') === 'alsafa' ? '#سيستم الصفا للمواد الشرعية' : '#سيستم الدكتور في اللغة العربية'}`)}` : '#'}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="مراسلة سريعة عبر الواتساب"
+                            className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                              parent.parent_phone 
+                                ? 'text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/40 hover:text-emerald-700' 
+                                : 'text-slate-300 pointer-events-none'
+                            }`}
+                          >
+                            <MessageSquare className="w-4 h-4" />
+                          </a>
+                          <a
+                            href={parent.parent_phone ? `sms:${parent.parent_phone}?body=${encodeURIComponent(`السلام عليكم ورحمة الله وبركاته،\nالسيد ولي أمر الطالب/ة: (${(parent as any).student_names?.join(' - ') || ''})\nتحية طيبة وبعد من ${typeof window !== 'undefined' && localStorage.getItem('sams_active_system') === 'alsafa' ? 'سيستم الصفا للمواد الشرعية' : 'سنتر الدكتور في اللغة العربية'}...\n\n${typeof window !== 'undefined' && localStorage.getItem('sams_active_system') === 'alsafa' ? '#سيستم الصفا للمواد الشرعية' : '#سيستم الدكتور في اللغة العربية'}`)}` : '#'}
+                            title="إرسال رسالة نصية SMS"
+                            className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                              parent.parent_phone 
+                                ? 'text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-900/40 hover:text-sky-700' 
+                                : 'text-slate-300 pointer-events-none'
+                            }`}
+                          >
+                            <Smartphone className="w-4 h-4" />
+                          </a>
+                        </td>
+                      </motion.tr>
+                    );
+                  })}
+                </AnimatePresence>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+      </div>
+
+    </motion.div>
+  );
+}

@@ -1,0 +1,216 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { Student, FeePayment, SystemNotification } from '../types';
+import { samsDb, addAuditLog } from './db';
+import { calculateStudentSubscription } from './subscriptionUtils';
+
+// List of months for academic year tracking
+export const MONTHS_LIST = [
+  'يوليو 2026',
+  'أغسطس 2026',
+  'سبتمبر 2026',
+  'أكتوبر 2026',
+  'نوفمبر 2026',
+  'ديسمبر 2026',
+  'يناير 2027',
+  'فبراير 2027',
+  'مارس 2027',
+  'أبريل 2027',
+  'مايو 2027',
+  'يونيو 2027'
+];
+
+/**
+ * Format Egyptian parent phone number to standard international WhatsApp format (e.g. 201034859313)
+ */
+export function formatEgyptianPhoneForWhatsApp(phone: string): string {
+  let cleaned = (phone || '').replace(/\D/g, '');
+  if (cleaned.startsWith('0')) {
+    cleaned = '2' + cleaned;
+  } else if (!cleaned.startsWith('20') && cleaned.length === 10) {
+    cleaned = '20' + cleaned;
+  }
+  return cleaned;
+}
+
+/**
+ * Generate a professional Arabic WhatsApp reminder text for student tuition
+ */
+export function generateWhatsAppReminderText(
+  studentName: string,
+  parentName: string,
+  monthName: string,
+  amount: number,
+  gradeLevel: string,
+  options?: {
+    remainingAmount?: number;
+    amountPaid?: number;
+    periodLabel?: string;
+    nextDueDate?: string;
+  }
+): string {
+  const isAlsafa = typeof window !== 'undefined' && localStorage.getItem('sams_active_system') === 'alsafa';
+  const customCenterTitle = isAlsafa ? 'سيستم الصفا للمواد الشرعية' : (localStorage.getItem('sams_custom_app_name_v2') || 'الدكتور في اللغة العربية');
+  const signature = isAlsafa ? '#سيستم الصفا للمواد الشرعية' : '#سيستم الدكتور في اللغة العربية';
+  
+  let financialDetails = '';
+  if (options?.remainingAmount && options.remainingAmount > 0 && options.amountPaid && options.amountPaid > 0) {
+    financialDetails = `نود إحاطة سيادتكم علماً بالموقف المالي لاشتراك الطالب/ة عن فترة (*${options.periodLabel || monthName}*):
+• إجمالي قيمة الاشتراك المقررة: *${amount} ج.م*
+• المبلغ المسدد سابقاً: *${options.amountPaid} ج.م*
+• المبلغ المتبقي المستحق سداده: *${options.remainingAmount} ج.م* ⚠️`;
+  } else {
+    financialDetails = `نود تذكير سيادتكم بموعد استحقاق قسط الاشتراك الدراسي عن فترة (*${options?.periodLabel || monthName}*) الخاص بـ (*${gradeLevel}*) وقيمته: *${amount} ج.م*.`;
+  }
+
+  const nextDueText = options?.nextDueDate ? `\n• موعد التجديد القادم: *${options.nextDueDate}*` : '';
+
+  return `السلام عليكم ورحمة الله وبركاته 🌸
+السيد ولي أمر الطالب/ة: *${studentName}* (${parentName || 'المحترم'})
+
+تحية طيبة وبعد من إدارة *${customCenterTitle}* 🏛️
+
+${financialDetails}${nextDueText}
+
+يرجى التكرم بالمبادرة بالسداد عبر مقر السنتر أو وسائل الدفع المعتمدة لضمان استمرار انتظام الطالب في المجموعات وتلقي الكتب والمذكرات الدراسية.
+
+شاكرين لكم حسن تعاونكم ودعمكم الدائم! 🌺
+
+${signature}`;
+}
+
+/**
+ * Get direct WhatsApp link for parent
+ */
+export function getWhatsAppReminderUrl(
+  parentPhone: string,
+  studentName: string,
+  parentName: string,
+  monthName: string,
+  amount: number,
+  gradeLevel: string
+): { cleanPhone: string; messageText: string; url: string } {
+  const cleanPhone = formatEgyptianPhoneForWhatsApp(parentPhone);
+  const messageText = generateWhatsAppReminderText(studentName, parentName, monthName, amount, gradeLevel);
+  const url = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(messageText)}`;
+  return { cleanPhone, messageText, url };
+}
+
+/**
+ * BACKGROUND SERVICE:
+ * Automatically checks all active students against due tuition payments.
+ * Generates system notifications and admin alerts for upcoming/unpaid installments.
+ */
+export function checkFeeDueDatesBackgroundService(targetMonth?: string): {
+  checkedCount: number;
+  unpaidCount: number;
+  newNotisCount: number;
+  unpaidStudents: Student[];
+} {
+  try {
+    const students = samsDb.getStudents().filter(s => s.status === 'active' && !s.deleted_at);
+    const payments = samsDb.getFees();
+    const existingNotifications = samsDb.getNotifications();
+
+    // Determine target month (default to current active month e.g., 'يوليو 2026' or saved active month)
+    const activeMonth = targetMonth || localStorage.getItem('sams_active_fee_month') || 'يوليو 2026';
+
+    // Get grade monthly fee map
+    let gradeFeesMap: Record<string, number> = {
+      'الأول الإعدادي': 150,
+      'الثاني الإعدادي': 150,
+      'الثالث الإعدادي': 150,
+      'الأول الثانوي': 200,
+      'الثاني الثانوي': 250,
+      'الثالث الثانوي': 300
+    };
+    const savedFees = localStorage.getItem('sams_grade_monthly_fees');
+    if (savedFees) {
+      try {
+        gradeFeesMap = { ...gradeFeesMap, ...JSON.parse(savedFees) };
+      } catch (e) {
+        // use fallback
+      }
+    }
+
+    const unpaidStudents: Student[] = [];
+    let newNotisCount = 0;
+
+    for (const student of students) {
+      const feeAmount = gradeFeesMap[student.grade_level] || 250;
+      const sub = calculateStudentSubscription(student, payments, feeAmount);
+
+      // Student is due if:
+      // 1. Current cycle is overdue
+      // 2. Or current cycle has remaining unpaid balance and is either overdue or within 3 days of ending
+      // 3. Or overall status is overdue / due with debt
+      const hasDebt = sub.currentCycle.remainingAmount > 0;
+      const isDue = hasDebt && (
+        sub.currentCycle.isOverdue ||
+        sub.currentCycle.daysRemainingInPeriod <= 3 ||
+        sub.overallStatus === 'overdue'
+      );
+
+      if (isDue) {
+        unpaidStudents.push(student);
+
+        // Check if an automated reminder notification already exists for this student & cycle
+        const cycleIdentifier = sub.currentCycle.periodLabel || sub.currentCycle.label;
+        const alreadyNotified = existingNotifications.some(
+          n => n.recipient_id === student.id &&
+               n.title.includes('استحقاق قسط') &&
+               (n.message.includes(cycleIdentifier) || n.message.includes(activeMonth))
+        );
+
+        if (!alreadyNotified) {
+          const remainingMsg = sub.currentCycle.remainingAmount < feeAmount && sub.currentCycle.amountPaid > 0
+            ? `(متبقي بعد سداد جزئي: ${sub.currentCycle.remainingAmount} ج.م من أصل ${feeAmount} ج.م)`
+            : `(المبلغ المطلوب: ${sub.currentCycle.remainingAmount} ج.م)`;
+
+          // 1. Create System Notification for parent/student
+          samsDb.addNotification({
+            title: `⚠️ تنبيه استحقاق اشتراك: ${student.name}`,
+            message: `تنبيه آلي من النظام: استحقاق اشتراك ${sub.currentCycle.label} ${remainingMsg} عن الفترة (${sub.currentCycle.periodLabel}) للطالب (${student.name}). تاريخ الاستحقاق: ${sub.nextDueDateFormatted}. يرجى التكرم بالسداد لإدارة السنتر.`,
+            category: 'alert',
+            recipient_type: 'specific',
+            recipient_id: student.id
+          });
+
+          // 2. Create Admin Notification for dashboard bell
+          samsDb.addAdminNotification({
+            type: 'payment_reminder',
+            message: `تنبيه أقساط: اشتراك ${sub.currentCycle.label} للطالب (${student.name}) ${remainingMsg} لم يستكمل سداده.`,
+            metadata: { student_id: student.id, month: sub.currentCycle.label, parent_phone: student.parent_phone }
+          });
+
+          newNotisCount++;
+        }
+      }
+    }
+
+    // Save last check timestamp
+    localStorage.setItem('sams_last_fee_check_timestamp', new Date().toISOString());
+
+    if (newNotisCount > 0) {
+      addAuditLog(
+        'INSERT',
+        'notifications',
+        'bg-service',
+        `خدمة الخلفية: تم فحص أقساط الطلاب لشهر (${activeMonth}). تم رصد ${unpaidStudents.length} طالب غير مسدد، وإنشاء ${newNotisCount} إشعار استحقاق جديد تلقائياً.`
+      );
+    }
+
+    return {
+      checkedCount: students.length,
+      unpaidCount: unpaidStudents.length,
+      newNotisCount,
+      unpaidStudents
+    };
+  } catch (err) {
+    console.error('Error running fee due dates background service:', err);
+    return { checkedCount: 0, unpaidCount: 0, newNotisCount: 0, unpaidStudents: [] };
+  }
+}

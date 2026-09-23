@@ -1,0 +1,26 @@
+{
+  "entities": {
+    "systemStoreDoc": {
+      "title": "System Store Document",
+      "description": "Serialized system state payload and timestamp",
+      "type": "object",
+      "properties": {
+        "payload": {
+          "type": "string",
+          "description": "Serialized JSON data payload"
+        },
+        "updatedAt": {
+          "type": "number",
+          "description": "Timestamp of the last update"
+        }
+      },
+      "required": ["payload"]
+    }
+  },
+  "firestore": {
+    "/sams_system_store/{key}": {
+      "schema": "systemStoreDoc",
+      "description": "Synced system state store collection keyed by configuration key"
+    }
+  }
+}

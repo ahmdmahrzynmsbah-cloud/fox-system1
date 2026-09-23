@@ -1,0 +1,940 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { Settings, Image, MessageSquare, Key, Save, RefreshCw, LogOut, HelpCircle, CheckCircle2, Moon, Sun, Palette, Volume2, VolumeX, Bell, Play, Sparkles, Download, Upload, ShieldCheck, HardDrive } from 'lucide-react';
+import ThemeToggle from './ThemeToggle';
+import { playNotificationTone, NotificationTone, TONE_OPTIONS } from '../utils/audioAlerts';
+
+interface SettingsManagerProps {
+  onSettingsSaved: () => void;
+  onLogout: () => void;
+  userRole: string;
+  userName: string;
+  isDarkMode?: boolean;
+  onToggleDarkMode?: () => void;
+}
+
+export default function SettingsManager({ onSettingsSaved, onLogout, userRole, userName, isDarkMode = false, onToggleDarkMode }: SettingsManagerProps) {
+  // State variables for customization
+  const [appName, setAppName] = useState(() => {
+    const saved = localStorage.getItem('sams_custom_app_name_v2');
+    return (!saved || saved === 'منصة الإدارة') ? 'سيستم FOX' : saved;
+  });
+  const [appLogo, setAppLogo] = useState(localStorage.getItem('sams_custom_app_logo_v2') || 'F');
+  const [headerTitle, setHeaderTitle] = useState(() => {
+    const saved = localStorage.getItem('sams_custom_header_title_v2');
+    return (!saved || saved === 'الدكتور في اللغة العربية' || saved === 'المنصة التعليمية المتكاملة للمعلم') ? 'FOX' : saved;
+  });
+  const [headerSubtitle, setHeaderSubtitle] = useState(() => {
+    const saved = localStorage.getItem('sams_custom_header_subtitle_v2');
+    return (!saved || saved === 'بوابة التحكم الإدارية والحصص الأكاديمية') ? 'لإدارة السناتر التعليمية' : saved;
+  });
+
+  // Msg templates
+  const [tPresent, setTPresent] = useState(localStorage.getItem('sams_msg_template_present') || 'عزيزي ولي الأمر ({اسم_ولي_الأمر})، بنبلغك إن الطالب/ة ({اسم_الطالب}) حضر النهاردة في السنتر. شكراً لمتابعتك.');
+  const [tExcused, setTExcused] = useState(localStorage.getItem('sams_msg_template_excused') || 'عزيزي ولي الأمر ({اسم_ولي_الأمر})، تم تسجيل استئذان للطالب/ة ({اسم_الطالب}) عن الحضور النهاردة للسنتر.');
+  const [tAbsence, setTAbsence] = useState(localStorage.getItem('sams_msg_template_absence') || 'عزيزي ولي الأمر ({اسم_ولي_الأمر})، بنبلغك إن الطالب/ة ({اسم_الطالب}) غاب النهاردة عن السنتر. ياريت تتواصل معانا عشان نعرف السبب. شكراً لمتابعتك.');
+  const [tHomework, setTHomework] = useState(localStorage.getItem('sams_msg_template_homework') || 'عزيزي ولي الأمر ({اسم_ولي_الأمر})، بنبلغك إن الطالب/ة ({اسم_الطالب}) مسلمش الواجب بتاعه النهارده. ياريت نتابع معاه عشان ميأثرش على مستواه.');
+  const [tExam, setTExam] = useState(localStorage.getItem('sams_msg_template_exam') || 'عزيزي ولي الأمر ({اسم_ولي_الأمر})، بنبلغك إن نتيجة الطالب/ة ({اسم_الطالب}) في الامتحان طلعت، ياريت تتابع معانا عشان تعرف مستواه وتطمن عليه.');
+  const [tBehavior, setTBehavior] = useState(localStorage.getItem('sams_msg_template_behavior') || 'عزيزي ولي الأمر ({اسم_ولي_الأمر})، نرجو التنبيه على الطالب/ة ({اسم_الطالب}) بخصوص الالتزام بقواعد السنتر وعدم إثارة الشغب أثناء الحصة.');
+  const [tExcellent, setTExcellent] = useState(localStorage.getItem('sams_msg_template_excellent') || 'خبر سار لولي الأمر ({اسم_ولي_الأمر})، أبدى الطالب/الطالبة ({اسم_الطالب}) اليوم تفوقاً دراسياً متميزاً ومشاركة رائعة في الحصة!');
+  const [tFees, setTFees] = useState(localStorage.getItem('sams_msg_template_fees') || 'تحية طيبة لولي الأمر ({اسم_ولي_الأمر})، نود تذكيركم بلطف بوجوب سداد اشتراك الشهر الحالي للطالب ({اسم_الطالب}).');
+  const [tMeeting, setTMeeting] = useState(localStorage.getItem('sams_msg_template_meeting') || 'المحترم ({اسم_ولي_الأمر})، نتشرف بدعوتكم لحضور مجلس الآباء القادم بالسنتر لمتابعة المسار التعليمي لولدكم ({اسم_الطالب}).');
+
+  // WhatsApp variables
+  const [callmebotKey, setCallmebotKey] = useState(localStorage.getItem('sams_callmebot_api_key') || '');
+  const [ultramsgId, setUltramsgId] = useState(localStorage.getItem('sams_ultramsg_instance_id') || '');
+  const [ultramsgToken, setUltramsgToken] = useState(localStorage.getItem('sams_ultramsg_token') || '');
+  const [whatsappEnabled, setWhatsappEnabled] = useState(localStorage.getItem('sams_whatsapp_enabled') !== 'false');
+
+  // Audio & Visual Notification Alerts Settings
+  const [notificationTone, setNotificationTone] = useState<string>(
+    localStorage.getItem('sams_notification_tone') || 'chime'
+  );
+  const [toneAttendance, setToneAttendance] = useState<string>(
+    localStorage.getItem('sams_tone_attendance') || 'chime'
+  );
+  const [toneFees, setToneFees] = useState<string>(
+    localStorage.getItem('sams_tone_fees') || 'bell'
+  );
+  const [toneAdmin, setToneAdmin] = useState<string>(
+    localStorage.getItem('sams_tone_admin') || 'digital'
+  );
+
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(
+    localStorage.getItem('sams_notification_sound_enabled') !== 'false'
+  );
+  const [visualAlertsEnabled, setVisualAlertsEnabled] = useState<boolean>(
+    localStorage.getItem('sams_visual_alerts_enabled') !== 'false'
+  );
+
+  const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 2 * 1024 * 1024) {
+        setNotification({
+          type: 'error',
+          message: 'حجم الملف كبير للغاية! يرجى رفع صورة أقل من 2 ميجابايت لضمان الأداء السريع وسعة حفظ المتصفح.'
+        });
+        setTimeout(() => setNotification(null), 4000);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          setAppLogo(event.target.result as string);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleSaveSettings = (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      localStorage.setItem('sams_custom_app_name_v2', appName.trim());
+      localStorage.setItem('sams_custom_app_logo_v2', appLogo.trim());
+      localStorage.setItem('sams_custom_header_title_v2', headerTitle.trim());
+      localStorage.setItem('sams_custom_header_subtitle_v2', headerSubtitle.trim());
+
+      localStorage.setItem('sams_msg_template_present', tPresent.trim());
+      localStorage.setItem('sams_msg_template_excused', tExcused.trim());
+      localStorage.setItem('sams_msg_template_absence', tAbsence.trim());
+      localStorage.setItem('sams_msg_template_homework', tHomework.trim());
+      localStorage.setItem('sams_msg_template_exam', tExam.trim());
+      localStorage.setItem('sams_msg_template_behavior', tBehavior.trim());
+
+      localStorage.setItem('sams_callmebot_api_key', callmebotKey.trim());
+      localStorage.setItem('sams_ultramsg_instance_id', ultramsgId.trim());
+      localStorage.setItem('sams_ultramsg_token', ultramsgToken.trim());
+      localStorage.setItem('sams_whatsapp_enabled', whatsappEnabled ? 'true' : 'false');
+
+      localStorage.setItem('sams_notification_tone', notificationTone);
+      localStorage.setItem('sams_tone_attendance', toneAttendance);
+      localStorage.setItem('sams_tone_fees', toneFees);
+      localStorage.setItem('sams_tone_admin', toneAdmin);
+      localStorage.setItem('sams_notification_sound_enabled', soundEnabled ? 'true' : 'false');
+      localStorage.setItem('sams_visual_alerts_enabled', visualAlertsEnabled ? 'true' : 'false');
+
+      setNotification({
+        type: 'success',
+        message: 'تم حفظ كافة الإعدادات والهوية البصرية وقوالب الرسائل بنجاح!'
+      });
+
+      // Notify parent app
+      onSettingsSaved();
+
+      setTimeout(() => setNotification(null), 4000);
+    } catch (err) {
+      setNotification({
+        type: 'error',
+        message: 'حدث خطأ أثناء محاولة حفظ الإعدادات بالمتصفح.'
+      });
+    }
+  };
+
+  const confirmResetDefaults = () => {
+    setAppName('منصة الإدارة');
+    setAppLogo('S');
+    setHeaderTitle('المنصة التعليمية المتكاملة');
+    setHeaderSubtitle('بوابة التحكم الإدارية والحصص الأكاديمية');
+    setTAbsence('عزيزي ولي الأمر ({اسم_ولي_الأمر})، نحيطكم علماً بتغيب ابنكم ({اسم_الطالب}) عن السنتر اليوم. نرجو التواصل مع الإدارة لتوضيح السبب.');
+    setTExcellent('خبر سار لولي الأمر ({اسم_ولي_الأمر})، أبدى الطالب/الطالبة ({اسم_الطالب}) اليوم تفوقاً دراسياً متميزاً ومشاركة رائعة في الحصة! ونال تشجيعاً خاصاً من الإدارة.');
+    setTFees('تحية طيبة لولي الأمر ({اسم_ولي_الأمر})، نود تذكيركم بلطف بوجوب سداد الرسوم الدراسية المتبقية لملف الطالب ({اسم_الطالب}) لانتظام القيد المالي. شكراً لتعاونكم.');
+    setTMeeting('المحترم ({اسم_ولي_الأمر})، نتشرف بدعوتكم لحضور مجلس الآباء القادم بالسنتر لمتابعة المسار التعليمي لولدكم ({اسم_الطالب}).');
+    setWhatsappEnabled(true);
+    setShowResetConfirm(false);
+  };
+
+  const handleExportBackup = () => {
+    try {
+      const backupData: Record<string, any> = {
+        meta: {
+          appName: localStorage.getItem('sams_custom_app_name_v2') || 'منصة الإدارة',
+          exportDate: new Date().toISOString(),
+          version: '2.0.0',
+          system: 'SAMS Center Management System'
+        },
+        storage: {}
+      };
+
+      const keysToBackup = [
+        'sams_v2_students',
+        'sams_v2_teachers',
+        'sams_v2_classes',
+        'sams_v2_subjects',
+        'sams_v2_grades',
+        'sams_v2_attendance',
+        'sams_v2_fees',
+        'sams_v2_notifications',
+        'sams_v2_audit_logs',
+        'sams_v2_current_user_role',
+        'sams_v2_center_schedule',
+        'sams_v2_exams',
+        'sams_v2_assignments',
+        'sams_v2_exam_grades',
+        'sams_v2_assignment_grades',
+        'sams_admin_notifications',
+        'sams_salaries',
+        'sams_system_users',
+        'sams_grade_monthly_fees',
+        'sams_v2_alsafa_students',
+        'sams_v2_alsafa_teachers',
+        'sams_v2_alsafa_classes',
+        'sams_v2_alsafa_subjects',
+        'sams_v2_alsafa_grades',
+        'sams_v2_alsafa_attendance',
+        'sams_v2_alsafa_fees',
+        'sams_v2_alsafa_notifications',
+        'sams_v2_alsafa_audit_logs',
+        'sams_v2_alsafa_current_user_role',
+        'sams_v2_alsafa_center_schedule',
+        'sams_v2_alsafa_exams',
+        'sams_v2_alsafa_assignments',
+        'sams_v2_alsafa_exam_grades',
+        'sams_v2_alsafa_assignment_grades',
+        'sams_alsafa_salaries',
+        'sams_alsafa_admin_notifications',
+        'sams_alsafa_system_users',
+        'sams_alsafa_grade_monthly_fees',
+        'sams_custom_app_name_v2',
+        'sams_custom_app_logo_v2',
+        'sams_custom_header_title_v2',
+        'sams_custom_header_subtitle_v2',
+        'sams_msg_template_present',
+        'sams_msg_template_excused',
+        'sams_msg_template_absence',
+        'sams_msg_template_homework',
+        'sams_msg_template_exam',
+        'sams_msg_template_behavior',
+        'sams_msg_template_excellent',
+        'sams_msg_template_fees',
+        'sams_msg_template_meeting',
+        'sams_callmebot_api_key',
+        'sams_ultramsg_instance_id',
+        'sams_ultramsg_token',
+        'sams_whatsapp_enabled',
+        'sams_notification_tone',
+        'sams_tone_attendance',
+        'sams_tone_fees',
+        'sams_tone_admin',
+        'sams_notification_sound_enabled',
+        'sams_visual_alerts_enabled'
+      ];
+
+      keysToBackup.forEach(key => {
+        const val = localStorage.getItem(key);
+        if (val !== null) {
+          backupData.storage[key] = val;
+        }
+      });
+
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(backupData, null, 2));
+      const downloadAnchor = document.createElement('a');
+      downloadAnchor.setAttribute("href", dataStr);
+      const dateStr = new Date().toISOString().split('T')[0];
+      downloadAnchor.setAttribute("download", `sams_full_backup_${dateStr}.json`);
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+
+      setNotification({
+        type: 'success',
+        message: 'تم تصدير النسخة الاحتياطية الكاملة بنجاح وتنزيلها لجهازك!'
+      });
+      setTimeout(() => setNotification(null), 4000);
+    } catch (err) {
+      setNotification({
+        type: 'error',
+        message: 'حدث خطأ أثناء تصدير النسخة الاحتياطية.'
+      });
+    }
+  };
+
+  const handleImportBackup = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const content = event.target?.result as string;
+        const parsed = JSON.parse(content);
+
+        if (!parsed || !parsed.storage) {
+          throw new Error('ملف النسخة الاحتياطية غير صالح أو تالف.');
+        }
+
+        Object.entries(parsed.storage).forEach(([key, val]) => {
+          if (typeof val === 'string') {
+            localStorage.setItem(key, val);
+            localStorage.setItem(`${key}_ts`, Date.now().toString());
+          }
+        });
+
+        if (typeof window !== 'undefined') {
+          import('../utils/firebaseSync').then(({ forcePushLocalToCloud }) => {
+            forcePushLocalToCloud();
+          });
+        }
+
+        setNotification({
+          type: 'success',
+          message: 'تم استعادة كافة بيانات وسيستم النسخة الاحتياطية بنجاح! جاري تحديث التطبيق...'
+        });
+
+        setTimeout(() => {
+          window.location.reload();
+        }, 1500);
+      } catch (err: any) {
+        setNotification({
+          type: 'error',
+          message: `فشل قراءة ملف النسخة الاحتياطية: ${err?.message || 'تأكد من اختيار ملف صحيح'}`
+        });
+        setTimeout(() => setNotification(null), 5000);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  return (
+    <div className="space-y-6" dir="rtl" id="sams_settings_manager_module">
+      {/* Title block */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white dark:bg-slate-800 p-4 sm:p-6 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-3xs">
+        <div className="space-y-1 text-right">
+          <h2 className="text-xl font-black text-slate-800 dark:text-slate-100 dark:text-slate-100 flex items-center gap-2">
+            
+            إعدادات النظام وتخصيص الهوية
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+            تخصيص اسم التطبيق، اللوجو، قوالب الرسائل التلقائية لأولياء الأمور، ومفاتيح واتساب الخلفية.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onLogout}
+            className="px-4 py-2 bg-red-50 dark:bg-red-900/40 hover:bg-red-100 text-red-600 dark:text-red-400 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            تسجيل الخروج
+          </button>
+        </div>
+      </div>
+
+      {notification && (
+        <div className={`p-4 rounded-xl text-xs flex items-center gap-2.5 animate-fade-in shadow-3xs text-right ${
+          notification.type === 'success' 
+            ? 'bg-emerald-50 border border-emerald-200 text-emerald-800' 
+            : 'bg-red-50 border border-red-200 text-red-800'
+        }`}>
+          <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+          <span className="font-bold">{notification.message}</span>
+        </div>
+      )}
+
+      <form onSubmit={handleSaveSettings} className="space-y-6">
+        {/* ROW 0: Dark Mode & Theme Settings */}
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-2xs overflow-hidden">
+          <div className="p-4 sm:p-5 border-b border-gray-50 bg-slate-50/50 flex flex-col sm:flex-row flex-wrap items-start sm:items-center justify-between gap-3 text-right">
+            <div className="flex items-center gap-2">
+              <Palette className="w-4.5 h-4.5 text-[#0D5C8C]" />
+              <h3 className="font-bold text-xs text-slate-800 dark:text-slate-100 dark:text-slate-100">تفضيلات مظهر الواجهة والوضع الداكن (Dark Mode)</h3>
+            </div>
+            <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 dark:bg-indigo-900/40 px-2.5 py-0.5 rounded-full border border-indigo-150">
+              تباين عالي ومريح للعين
+            </span>
+          </div>
+          <div className="p-4 sm:p-5 flex flex-col md:flex-row items-center justify-between gap-4 text-right">
+            <div className="space-y-1">
+              <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100 flex items-center gap-2">
+                {isDarkMode ? <Moon className="w-4 h-4 text-amber-400" /> : <Sun className="w-4 h-4 text-indigo-600" />}
+                {isDarkMode ? 'الوضع الداكن مفعّل حالياً' : 'الوضع الفاتح مفعّل حالياً'}
+              </h4>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                تعديل ألوان الواجهة بالكامل لتناسب الرؤية الليلية أو البيئات ذات الإضاءة المنخفضة مع تحسين تباين النصوص والأيقونات في جميع القوائم والجداول.
+              </p>
+            </div>
+
+            {onToggleDarkMode && (
+              <ThemeToggle isDarkMode={isDarkMode} onToggle={onToggleDarkMode} />
+            )}
+          </div>
+        </div>
+
+        {/* ROW 0.5: Audio Notification Tones & Alert Controls */}
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-2xs overflow-hidden">
+          <div className="p-4 sm:p-5 border-b border-gray-50 bg-slate-50/50 flex flex-col sm:flex-row flex-wrap items-start sm:items-center justify-between gap-3 text-right">
+            <div className="flex items-center gap-2">
+              <Volume2 className="w-4.5 h-4.5 text-[#0D5C8C]" />
+              <h3 className="font-bold text-xs text-slate-800 dark:text-slate-100 dark:text-slate-100">إعدادات النغمات والتنبيهات الصوتية والمباشرة (Notification Sound Tones)</h3>
+            </div>
+            <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/40 px-2.5 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-700">
+              Web Audio Synthesizer
+            </span>
+          </div>
+
+          <div className="p-4 sm:p-5 space-y-5 text-right">
+            
+            {/* Toggles */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="p-3.5 bg-slate-50/80 rounded-xl border border-slate-200/60 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="space-y-0.5">
+                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100 flex items-center gap-1.5">
+                    {soundEnabled ? <Volume2 className="w-4 h-4 text-emerald-600" /> : <VolumeX className="w-4 h-4 text-slate-400" />}
+                    التنبيه الصوتي التلقائي
+                  </h4>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">تشغيل نغمة عند إضافة أو وصول إشعار جديد بالسيستم</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={soundEnabled}
+                  onChange={(e) => {
+                    setSoundEnabled(e.target.checked);
+                    if (e.target.checked) playNotificationTone(notificationTone as NotificationTone);
+                  }}
+                  className="w-4 h-4 accent-[#0D5C8C] cursor-pointer shrink-0"
+                />
+              </div>
+
+              <div className="p-3.5 bg-slate-50/80 rounded-xl border border-slate-200/60 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="space-y-0.5">
+                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100 flex items-center gap-1.5">
+                    <Bell className="w-4 h-4 text-amber-500" />
+                    التنبيه المرئي البارز (Pop-up Alert)
+                  </h4>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">عرض بنر منبثق أعلى الشاشة عند رصد إشعارات جديدة</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={visualAlertsEnabled}
+                  onChange={(e) => setVisualAlertsEnabled(e.target.checked)}
+                  className="w-4 h-4 accent-[#0D5C8C] cursor-pointer shrink-0"
+                />
+              </div>
+            </div>
+
+            {/* Category-Specific Sound Dropdowns with Trial Listen Button */}
+            <div className="space-y-4 pt-2 border-t border-slate-100 dark:border-slate-700 dark:border-slate-800">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100">
+                  تخصيص نغمة التنبيه لكل نوع من الإشعارات (انقر زر الاستماع لتجربة الصوت):
+                </label>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 font-sans">اختر النغمة ثم اضغط تجربة 🔊</span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                
+                {/* 1. Attendance & Absence Tones */}
+                <div className="p-4 bg-slate-50/90 dark:bg-slate-900/60 rounded-xl border border-slate-200/80 dark:border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-extrabold text-slate-800 dark:text-slate-100 dark:text-slate-100 flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" />
+                      إشعارات الحضور والغياب
+                    </span>
+                    <span className="text-[10px] bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 font-bold px-2 py-0.5 rounded-md">
+                      Attendance
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={toneAttendance}
+                      onChange={(e) => {
+                        setToneAttendance(e.target.value);
+                        playNotificationTone(e.target.value as NotificationTone);
+                      }}
+                      className="flex-1 min-w-0 truncate bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 sm:px-2.5 py-1.5 text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-hidden focus:border-[#0D5C8C]"
+                    >
+                      {TONE_OPTIONS.map((opt) => (
+                        <option key={opt.id} value={opt.id}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+
+                    <button
+                      type="button"
+                      onClick={() => playNotificationTone(toneAttendance as NotificationTone)}
+                      className="px-2 sm:px-3 py-1.5 rounded-lg bg-[#0D5C8C] hover:bg-[#0a4a70] text-white text-xs font-bold flex items-center gap-1 shadow-xs transition-transform active:scale-95 cursor-pointer shrink-0"
+                      title="تجربة سماع النغمة الحالية"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <span>تجربة</span>
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                    {TONE_OPTIONS.find(t => t.id === toneAttendance)?.desc}
+                  </p>
+                </div>
+
+                {/* 2. Fees & Financial Tones */}
+                <div className="p-4 bg-slate-50/90 dark:bg-slate-900/60 rounded-xl border border-slate-200/80 dark:border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-extrabold text-slate-800 dark:text-slate-100 dark:text-slate-100 flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />
+                      تنبيهات الرسوم والماليات
+                    </span>
+                    <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 font-bold px-2 py-0.5 rounded-md">
+                      Fees
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={toneFees}
+                      onChange={(e) => {
+                        setToneFees(e.target.value);
+                        playNotificationTone(e.target.value as NotificationTone);
+                      }}
+                      className="flex-1 min-w-0 truncate bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 sm:px-2.5 py-1.5 text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-hidden focus:border-[#0D5C8C]"
+                    >
+                      {TONE_OPTIONS.map((opt) => (
+                        <option key={opt.id} value={opt.id}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+
+                    <button
+                      type="button"
+                      onClick={() => playNotificationTone(toneFees as NotificationTone)}
+                      className="px-2 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1 shadow-xs transition-transform active:scale-95 cursor-pointer shrink-0"
+                      title="تجربة سماع النغمة الحالية"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <span>تجربة</span>
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                    {TONE_OPTIONS.find(t => t.id === toneFees)?.desc}
+                  </p>
+                </div>
+
+                {/* 3. Admin Notifications Tones */}
+                <div className="p-4 bg-slate-50/90 dark:bg-slate-900/60 rounded-xl border border-slate-200/80 dark:border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-extrabold text-slate-800 dark:text-slate-100 dark:text-slate-100 flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 inline-block" />
+                      إشعارات الإدارة والسيستم
+                    </span>
+                    <span className="text-[10px] bg-indigo-100 dark:bg-indigo-950 text-indigo-800 dark:text-indigo-300 font-bold px-2 py-0.5 rounded-md">
+                      Admin
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={toneAdmin}
+                      onChange={(e) => {
+                        setToneAdmin(e.target.value);
+                        playNotificationTone(e.target.value as NotificationTone);
+                      }}
+                      className="flex-1 min-w-0 truncate bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-2 sm:px-2.5 py-1.5 text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-hidden focus:border-[#0D5C8C]"
+                    >
+                      {TONE_OPTIONS.map((opt) => (
+                        <option key={opt.id} value={opt.id}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+
+                    <button
+                      type="button"
+                      onClick={() => playNotificationTone(toneAdmin as NotificationTone)}
+                      className="px-2 sm:px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1 shadow-xs transition-transform active:scale-95 cursor-pointer shrink-0"
+                      title="تجربة سماع النغمة الحالية"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <span>تجربة</span>
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                    {TONE_OPTIONS.find(t => t.id === toneAdmin)?.desc}
+                  </p>
+                </div>
+
+              </div>
+            </div>
+
+
+
+          </div>
+        </div>
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-2xs overflow-hidden">
+          <div className="p-4 sm:p-5 border-b border-gray-50 bg-slate-50/50 flex items-center gap-2 text-right">
+            <Image className="w-4.5 h-4.5 text-[#0D5C8C]" />
+            <h3 className="font-bold text-xs text-slate-800 dark:text-slate-100 dark:text-slate-100">1. الهوية البصرية وشعارات النظام والتطبيق</h3>
+          </div>
+          <div className="p-4 sm:p-5 space-y-4 text-right">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">اسم التطبيق الفرعي (بالشريط الجانبي):</label>
+                <input
+                  type="text"
+                  value={appName}
+                  onChange={(e) => setAppName(e.target.value)}
+                  placeholder="منصة الإدارة"
+                  className="w-full p-2.5 text-xs bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-lg text-right outline-none focus:border-[#0D5C8C] shadow-3xs"
+                  required
+                />
+                <span className="text-[10px] text-slate-400 block">(الاسم المعروض أعلى الشريط اليمين والجانبي)</span>
+              </div>
+
+              <div className="space-y-1.5 col-span-1 md:col-span-2">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">هوية وألوان المنصة المعتمدة:</label>
+                <div className="bg-emerald-50/70 border border-emerald-150 p-4 rounded-xl flex items-center gap-3 text-right">
+                  <div className="w-10 h-10 rounded-lg bg-[#0D5C8C] flex items-center justify-center text-white text-xs font-black shrink-0 shadow-sm font-sans select-none">
+                    FOX
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100 leading-none">شعار المنظومة مفعّل بنجاح</h4>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                      تم اعتماد الهوية: <strong className="text-[#0D5C8C]">سيستم FOX - لإدارة السناتر التعليمية</strong> كشعار وعنوان أساسي بكل الواجهات.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">عنوان المنصة الرئيسي (بالأعلى):</label>
+                <input
+                  type="text"
+                  value={headerTitle}
+                  onChange={(e) => setHeaderTitle(e.target.value)}
+                  placeholder="FOX"
+                  className="w-full p-2.5 text-xs bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-lg text-right outline-none focus:border-[#0D5C8C] shadow-3xs"
+                  required
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">وصف وعنوان المنصة الفرعي:</label>
+                <input
+                  type="text"
+                  value={headerSubtitle}
+                  onChange={(e) => setHeaderSubtitle(e.target.value)}
+                  placeholder="لإدارة السناتر التعليمية"
+                  className="w-full p-2.5 text-xs bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-lg text-right outline-none focus:border-[#0D5C8C] shadow-3xs"
+                  required
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ROW 2: Custom Notification Templates */}
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-2xs overflow-hidden">
+          <div className="p-4 sm:p-5 border-b border-gray-50 bg-slate-50/50 flex flex-col sm:flex-row flex-wrap items-start sm:items-center justify-between gap-3 text-right">
+            <div className="flex items-center gap-2">
+              <MessageSquare className="w-4.5 h-4.5 text-[#0D5C8C]" />
+              <h3 className="font-bold text-xs text-slate-800 dark:text-slate-100 dark:text-slate-100">2. تخصيص قوالب وصيغ الرسائل التلقائية (الغياب وغيرها)</h3>
+            </div>
+            <div className="bg-blue-50 dark:bg-blue-900/40 text-[#0D5C8C] px-2 py-1 text-[10px] font-bold rounded">
+              صيغة ذكية تستخدم المتغيرات التلقائية
+            </div>
+          </div>
+          <div className="p-4 sm:p-5 space-y-4 text-right">
+            <div className="p-3 bg-amber-50 dark:bg-amber-900/40 rounded-xl border border-amber-100 dark:border-amber-800 text-[11px] text-amber-800 dark:text-amber-300 leading-relaxed font-medium">
+               <b>ملاحظة المتغيرات:</b> يمكنك استخدام الرموز التالية داخل أي قالب، ليقوم النظام بتعويضها تلقائياً بالاسم الفعلي للطالب وولي الأمر عند الإرسال:
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2 text-center text-[10px]">
+                <div className="bg-white dark:bg-slate-800 p-1 rounded border border-amber-200 dark:border-amber-700"><code className="font-bold text-rose-600 dark:text-rose-400 font-mono">{"{اسم_الطالب}"}</code> لاسم الطالب</div>
+                <div className="bg-white dark:bg-slate-800 p-1 rounded border border-amber-200 dark:border-amber-700"><code className="font-bold text-rose-600 dark:text-rose-400 font-mono">{"{اسم_ولي_الأمر}"}</code> لولي أمر الطالب</div>
+                <div className="bg-white dark:bg-slate-800 p-1 rounded border border-amber-200 dark:border-amber-700"><code className="font-bold text-[#0D5C8C] font-mono">{"{التاريخ}"}</code> لتاريخ اليوم تلقائياً</div>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {/* Absence Template */}
+              <div className="space-y-1.5 p-3 rounded-lg bg-red-55/10 border border-red-100 dark:border-red-800">
+                <span className="text-rose-700 dark:text-rose-300 text-[10px] font-bold px-1.5 py-0.5 bg-rose-50 dark:bg-rose-900/40 rounded">إشعار غياب الحضور اليومي:</span>
+                <textarea
+                  rows={3}
+                  value={tAbsence}
+                  onChange={(e) => setTAbsence(e.target.value)}
+                  className="w-full mt-1.5 p-2 text-xs bg-white dark:bg-slate-800 border border-gray-250 rounded-lg text-right outline-none focus:border-red-500 shadow-3xs font-medium leading-relaxed"
+                  placeholder="نص رسالة الغياب..."
+                  required
+                />
+                <div className="text-[10px] text-slate-400 mt-1">يُرسل فور تسجيل غياب الطالب وإشعاره هاتفياً.</div>
+              </div>
+
+              {/* Outstanding template */}
+              <div className="grid grid-cols-1 gap-4">
+                <div className="space-y-1.5 p-3 rounded-lg bg-emerald-55/10 border border-emerald-100 dark:border-emerald-800">
+                  <span className="text-emerald-800 dark:text-emerald-300 text-[10px] font-bold px-1.5 py-0.5 bg-emerald-50 dark:bg-emerald-900/40 rounded">رسالة تهنئة / التميز الطلابي:</span>
+                  <textarea
+                    rows={3}
+                    value={tExcellent}
+                    onChange={(e) => setTExcellent(e.target.value)}
+                    className="w-full mt-1.5 p-2 text-xs bg-white dark:bg-slate-800 border border-gray-250 rounded-lg text-right outline-none focus:border-emerald-500 shadow-3xs font-medium leading-relaxed"
+                    placeholder="نص رسالة التميز..."
+                    required
+                  />
+                </div>
+
+                <div className="space-y-1.5 p-3 rounded-lg bg-sky-55/10 border border-sky-100 dark:border-sky-800">
+                  <span className="text-sky-800 text-[10px] font-bold px-1.5 py-0.5 bg-sky-50 dark:bg-sky-900/40 rounded">رسالة تذكير باشتراكات الشهر والرسوم المالية:</span>
+                  <textarea
+                    rows={3}
+                    value={tFees}
+                    onChange={(e) => setTFees(e.target.value)}
+                    className="w-full mt-1.5 p-2 text-xs bg-white dark:bg-slate-800 border border-gray-250 rounded-lg text-right outline-none focus:border-sky-500 shadow-3xs font-medium leading-relaxed"
+                    placeholder="نص رسالة الاشتراكات والرسوم..."
+                    required
+                  />
+                </div>
+
+                <div className="space-y-1.5 p-3 rounded-lg bg-indigo-55/10 border border-indigo-100 dark:border-indigo-800">
+                  <span className="text-indigo-800 text-[10px] font-bold px-1.5 py-0.5 bg-indigo-50 dark:bg-indigo-900/40 rounded">رسالة دعوة لحضور اجتماع الآباء:</span>
+                  <textarea
+                    rows={3}
+                    value={tMeeting}
+                    onChange={(e) => setTMeeting(e.target.value)}
+                    className="w-full mt-1.5 p-2 text-xs bg-white dark:bg-slate-800 border border-gray-250 rounded-lg text-right outline-none focus:border-indigo-500 shadow-3xs font-medium leading-relaxed"
+                    placeholder="نص رسالة اجتماع أولياء الأمور..."
+                    required
+                  />
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+
+        {/* ROW 3: Centralized WhatsApp Integrations */}
+        <div className={`bg-white dark:bg-slate-800 rounded-2xl border ${whatsappEnabled ? 'border-gray-100' : 'border-gray-200'} shadow-2xs overflow-hidden transition-colors`}>
+          <div className="p-4 sm:p-5 border-b border-gray-50 bg-slate-50/50 flex flex-col sm:flex-row flex-wrap items-start sm:items-center justify-between gap-3 text-right">
+            <div className="flex items-center gap-2">
+              <Key className="w-4.5 h-4.5 text-[#0D5C8C]" />
+              <h3 className="font-bold text-xs text-slate-800 dark:text-slate-100 dark:text-slate-100">3. بوابات الإرسال السحابي للواتسآب (إرسال صامت بالخلفية)</h3>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={`text-[10px] font-bold ${whatsappEnabled ? 'text-emerald-600' : 'text-slate-500 dark:text-slate-400'}`}>{whatsappEnabled ? 'مفعل' : 'معطل'}</span>
+              <button 
+                type="button"
+                onClick={() => setWhatsappEnabled(!whatsappEnabled)}
+                className={`w-10 h-5 rounded-full relative transition-colors cursor-pointer focus:outline-hidden ${whatsappEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}
+              >
+                <span className={`absolute top-1 w-3 h-3 rounded-full bg-white dark:bg-slate-800 transition-all shadow-sm ${whatsappEnabled ? 'left-1' : 'left-6'}`} />
+              </button>
+            </div>
+          </div>
+          <div className={`p-5 space-y-4 text-right transition-opacity ${!whatsappEnabled ? 'opacity-50 pointer-events-none' : ''}`}>
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              إذا كنت قد قمت بتفعيل باقتك، يمكنك وضع المفتاح الخاص بك بالأسفل. سيقوم السيستم فوراً بالإرسال المباشر للواتسآب في الخلفية صامتًا بالخفاء بمجرد رصد الغياب أو الحضور أو طباعة الإيصال ودون فتح تطبيق واتساب يدويًا على جهازك!
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* CallMeBot Group */}
+              <div className="p-4 bg-emerald-50/20 rounded-xl border border-emerald-100 dark:border-emerald-800 space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="px-2 py-1 bg-emerald-105/10 text-emerald-800 dark:text-emerald-300 text-[10px] font-black rounded">خيار 1: CallMeBot (تفعيل شخصي ومجاني)</span>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-200">كود الـ API Key لـ CallMeBot الخاص بك:</label>
+                  <input
+                    type="text"
+                    value={callmebotKey}
+                    onChange={(e) => setCallmebotKey(e.target.value)}
+                    placeholder="أدخل كود الـ API مثل 321852..."
+                    className="w-full p-2.5 text-xs bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-lg text-left font-mono outline-none focus:border-emerald-500"
+                  />
+                  <span className="text-[10px] text-slate-400 block">
+                    يمكن الحصول عليه بمراسلة البوت <b className="font-mono text-slate-700 dark:text-slate-200">+34 621 07 33 53</b> على الواتساب بعبارة: <code className="bg-emerald-50 dark:bg-emerald-900/40 text-emerald-600 font-bold px-1 rounded">I allow callmebot to send me messages</code>
+                  </span>
+                </div>
+              </div>
+
+              {/* UltraMsg Group */}
+              <div className="p-4 bg-sky-50/20 rounded-xl border border-sky-100 dark:border-sky-800 space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="px-2 py-1 bg-sky-105/10 text-sky-800 text-[10px] font-black rounded">خيار 2: UltraMsg (بوابة المدارس الاحترافية بالخلفية)</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <label className="block text-[10px] font-bold text-slate-700 dark:text-slate-200">رقم السيرفر (Instance ID):</label>
+                    <input
+                      type="text"
+                      value={ultramsgId}
+                      onChange={(e) => setUltramsgId(e.target.value)}
+                      placeholder="instance12345"
+                      className="w-full p-2.5 text-xs bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-lg text-left font-mono outline-none focus:border-sky-500"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="block text-[10px] font-bold text-slate-700 dark:text-slate-200">كود التحقق (Token):</label>
+                    <input
+                      type="text"
+                      value={ultramsgToken}
+                      onChange={(e) => setUltramsgToken(e.target.value)}
+                      placeholder="token_value"
+                      className="w-full p-2.5 text-xs bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-lg text-left font-mono outline-none focus:border-sky-500"
+                    />
+                  </div>
+                </div>
+                <span className="text-[10px] text-slate-400 block pt-1">
+                  اربط واتساب خط السنتر بـ <a href="https://ultramsg.com" target="_blank" rel="noreferrer" className="text-sky-600 font-bold hover:underline">ultramsg.com</a> لإرسال جماعي احترافي وفوري لأي رقم.
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ROW 4: Professional Full System Backup & Restore */}
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-2xs overflow-hidden">
+          <div className="p-4 sm:p-5 border-b border-gray-50 bg-slate-50/50 flex flex-col sm:flex-row flex-wrap items-start sm:items-center justify-between gap-3 text-right">
+            <div className="flex items-center gap-2">
+              <HardDrive className="w-4.5 h-4.5 text-[#0D5C8C]" />
+              <h3 className="font-bold text-xs text-slate-800 dark:text-slate-100">4. النسخ الاحتياطي والاستعادة الكاملة للنظام (Full Backup & Restore)</h3>
+            </div>
+            <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/40 px-2.5 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-700">
+              حماية وآمان البيانات السحابية والمحلية
+            </span>
+          </div>
+
+          <div className="p-4 sm:p-6 space-y-6 text-right">
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              قم بتحميل نسخة احتياطية كاملة بصيغة JSON تحتوي على كافة سجلات الطلاب، المعلمين، الحضور، الرسوم، المجموعات، الامتحانات، الإعدادات، وقوالب الرسائل لاستخدامها في استعادة النظام في أي وقت أو نقل البيانات بين الأجهزة بأمان تام.
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Export Backup Card */}
+              <div className="p-4 sm:p-5 bg-gradient-to-br from-blue-50/50 to-indigo-50/30 dark:from-slate-900/40 dark:to-slate-900/20 rounded-2xl border border-blue-100 dark:border-slate-700 flex flex-col justify-between gap-4">
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2 text-[#0D5C8C] dark:text-blue-400 font-bold text-xs">
+                    <Download className="w-4.5 h-4.5" />
+                    تصدير نسخة احتياطية كاملة (Export Backup)
+                  </div>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                    تنزيل ملف JSON يحتوي على جميع بيانات وقاعدة بيانات السنتر الحالية فوراً إلى جهازك.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleExportBackup}
+                  className="w-full py-2.5 px-4 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white text-xs font-black rounded-xl flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer active:scale-95"
+                >
+                  <Download className="w-4 h-4" />
+                  تحميل ملف النسخة الاحتياطية (.JSON)
+                </button>
+              </div>
+
+              {/* Import / Restore Card */}
+              <div className="p-4 sm:p-5 bg-gradient-to-br from-amber-50/40 to-orange-50/20 dark:from-slate-900/40 dark:to-slate-900/20 rounded-2xl border border-amber-100 dark:border-slate-700 flex flex-col justify-between gap-4">
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 font-bold text-xs">
+                    <Upload className="w-4.5 h-4.5" />
+                    استعادة النظام من نسخة احتياطية (Restore Data)
+                  </div>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                    رفع ملف نسخة احتياطية سابق لاستعادة كافة السجلات والبيانات والمزامنة مع السحابة.
+                  </p>
+                </div>
+
+                <div>
+                  <input
+                    type="file"
+                    accept=".json"
+                    id="backup_file_input"
+                    className="hidden"
+                    onChange={handleImportBackup}
+                  />
+                  <label
+                    htmlFor="backup_file_input"
+                    className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-700 text-white text-xs font-black rounded-xl flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer active:scale-95"
+                  >
+                    <Upload className="w-4 h-4" />
+                    اختر ملف النسخة الاحتياطية للاستعادة
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            {/* Cloud Sync Status Info */}
+            <div className="p-3.5 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200/60 flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
+                <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                <span>المزامنة السحابية التلقائية مع Firebase Firestore نشطة</span>
+              </div>
+              <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/40 px-2 py-0.5 rounded">متصل وسليم</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Action Controls */}
+        <div className="flex flex-col md:flex-row flex-wrap items-start md:items-center justify-between gap-4 p-4 bg-slate-50/50 border border-gray-100 dark:border-gray-700 rounded-2xl">
+          <button
+            type="button"
+            onClick={() => setShowResetConfirm(true)}
+            className="px-4 py-2 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50 border border-gray-200 dark:border-gray-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-bold transition-transform active:scale-95 cursor-pointer"
+          >
+            استعادة افتراضيات المصنع
+          </button>
+
+          <button
+            type="submit"
+            className="px-8 py-3 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white text-xs font-black rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-md transform active:scale-95"
+          >
+            <Save className="w-4 h-4" />
+            حفظ إعدادات الهوية واللوجو والرسائل 
+          </button>
+        </div>
+      </form>
+
+      {/* Reset Defaults Modal */}
+      <AnimatePresence>
+        {showResetConfirm && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in" dir="rtl">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-xl max-w-md w-full p-4 sm:p-6 text-right space-y-4"
+            >
+              <div className="flex items-center gap-3 text-red-600 dark:text-red-400">
+                <div className="w-10 h-10 bg-red-50 dark:bg-red-900/40 rounded-full flex items-center justify-center">
+                  <RefreshCw className="w-5 h-5 text-red-600 dark:text-red-400" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-950 text-sm">استعادة القيم الافتراضية للنظام</h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-sans font-medium">سيتم مسح قوالب الرسائل المخصصة</p>
+                </div>
+              </div>
+
+              <div className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed font-sans space-y-1.5 py-2 bg-slate-50 dark:bg-slate-900/50 p-3.5 rounded-xl border border-slate-100 dark:border-slate-700">
+                <p>هل أنت متأكد من رغبتك في استعادة القيم الافتراضية للنظام؟</p>
+                <p className="text-[10px] text-slate-400">تحذير: سيتم إرجاع اسم التطبيق وقوالب الرسائل إلى صيغتها الأولية.</p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-50">
+                <button
+                  type="button"
+                  onClick={() => setShowResetConfirm(false)}
+                  className="px-4 py-2 border border-gray-200 dark:border-gray-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-lg text-xs font-bold cursor-pointer"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmResetDefaults}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer"
+                >
+                  تأكيد الاستعادة
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}

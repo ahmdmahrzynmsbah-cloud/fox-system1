@@ -1,0 +1,3109 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect } from 'react';
+import { ClassRoom, Teacher, Subject, CenterScheduleData, Student } from '../types';
+import { samsDb, formatScheduleDisplay, deriveParentName } from '../utils/db';
+import { appendSystemSignature } from '../utils/phoneUtils';
+
+import StudentFullReport from './StudentFullReport';
+import {
+  Plus,
+  BookOpen,
+  User,
+  Maximize2,
+  ShieldAlert,
+  Check,
+  Calendar,
+  Trash2,
+  CheckCircle,
+  Users,
+  Eye,
+  ArrowRight,
+  ArrowLeft,
+  Search,
+  Filter,
+  Phone,
+  MessageCircle,
+  Edit,
+  RefreshCw,
+  Printer,
+  GraduationCap,
+  AlertTriangle,
+  CreditCard,
+  UserPlus,
+  Archive,
+  RotateCcw,
+  FileText,
+  X,
+  Upload,
+  Image as ImageIcon,
+  Sliders,
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  Zap,
+  GripVertical,
+  Move,
+  Info
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { useSamsDbSync } from '../hooks/useSamsDbSync';
+import { normalizePhoneDigits, validateEgyptianPhone } from '../utils/phoneUtils';
+import { getStudentTitle, getStudentGender, isFemaleName } from '../utils/genderUtils';
+
+export default function ClassesManager() {
+  const [classes, setClasses] = useState<ClassRoom[]>([]);
+  const [students, setStudents] = useState<Student[]>([]);
+  const [teachers, setTeachers] = useState<Teacher[]>([]);
+  const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [showAddClass, setShowAddClass] = useState(false);
+  const [errorText, setErrorText] = useState('');
+  const [successText, setSuccessText] = useState('');
+  const [classToDelete, setClassToDelete] = useState<ClassRoom | null>(null);
+  const [editingClass, setEditingClass] = useState<ClassRoom | null>(null);
+  const [editClassForm, setEditClassForm] = useState({
+    name: '',
+    schedule_days: '',
+    schedule_time: '',
+    day_times: {} as Record<string, string>,
+    grade_level: 'الأول الإعدادي',
+    education_type: 'عام' as 'عام' | 'أزهر'
+  });
+  const [editUnifiedTime, setEditUnifiedTime] = useState('');
+  
+  const [classForm, setClassForm] = useState({
+    name: '',
+    schedule_days: '',
+    schedule_time: '',
+    day_times: {} as Record<string, string>,
+    grade_level: 'الأول الإعدادي',
+    education_type: 'عام' as 'عام' | 'أزهر'
+  });
+
+  const [unifiedTime, setUnifiedTime] = useState('');
+
+  const [schedule, setSchedule] = useState<CenterScheduleData | null>(null);
+  const [isEditingSchedule, setIsEditingSchedule] = useState(false);
+  const [editingSchedule, setEditingSchedule] = useState<CenterScheduleData | null>(null);
+
+  // Dedicated Group Students View State
+  const [selectedClassForStudents, setSelectedClassForStudents] = useState<ClassRoom | null>(null);
+  const [studentSearchTerm, setStudentSearchTerm] = useState('');
+  const [studentStatusFilter, setStudentStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [attendanceFilter, setAttendanceFilter] = useState<'all' | 'excellent' | 'warning'>('all');
+
+  // Modals inside Group Students Page
+  const [selectedStudentForReport, setSelectedStudentForReport] = useState<Student | null>(null);
+  const [showAddStudentModal, setShowAddStudentModal] = useState(false);
+  const [editingStudent, setEditingStudent] = useState<Student | null>(null);
+  const [transferStudent, setTransferStudent] = useState<Student | null>(null);
+  const [targetClassIdForTransfer, setTargetClassIdForTransfer] = useState<string>('');
+  const [showGroupWhatsAppModal, setShowGroupWhatsAppModal] = useState(false);
+  const [groupWhatsAppMsg, setGroupWhatsAppMsg] = useState('');
+
+  // Print Roster & Archive State
+  const [showPrintRosterModal, setShowPrintRosterModal] = useState(false);
+  const [showArchiveModal, setShowArchiveModal] = useState(false);
+  const [archivedStudentToPermanentDelete, setArchivedStudentToPermanentDelete] = useState<Student | null>(null);
+  const [archivedSearchTerm, setArchivedSearchTerm] = useState('');
+  
+  // Progress State
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processingProgress, setProcessingProgress] = useState(0);
+  const [processingText, setProcessingText] = useState('');
+
+  // PDF / Print Customization State
+  const [printHeaderTitle, setPrintHeaderTitle] = useState(
+    (typeof window !== 'undefined' && localStorage.getItem('sams_active_system') === 'alsafa')
+      ? 'سيستم الصفا للمواد الشرعية'
+      : (localStorage.getItem('sams_custom_header_title_v2') || 'الدكتور في اللغة العربية')
+  );
+  const [printHeaderSubtitle, setPrintHeaderSubtitle] = useState(
+    localStorage.getItem('sams_custom_header_subtitle_v2') || 'سجل متابعة وكشوفات طلاب المجموعات التعليمية'
+  );
+  const [printHeaderContact, setPrintHeaderContact] = useState(
+    localStorage.getItem('sams_custom_header_contact_v2') || 'هاتف: 01000000000 - الفرع الرئيسي'
+  );
+  const [printHeaderLogo, setPrintHeaderLogo] = useState(
+    localStorage.getItem('sams_custom_app_logo_v2') || ''
+  );
+  const [printLogoAlign, setPrintLogoAlign] = useState<'right' | 'center' | 'left'>(
+    (localStorage.getItem('sams_custom_header_logo_align_v2') as any) || 'right'
+  );
+  const [showHeaderSettings, setShowHeaderSettings] = useState(false);
+
+  // Drag and Drop States for Group Cards & Schedule Table
+  const [draggedClassIndex, setDraggedClassIndex] = useState<number | null>(null);
+  const [dragOverClassIndex, setDragOverClassIndex] = useState<number | null>(null);
+  const [draggedCardClass, setDraggedCardClass] = useState<ClassRoom | null>(null);
+  const [draggedScheduleSlot, setDraggedScheduleSlot] = useState<{ key: string; val: string } | null>(null);
+  const [dragOverScheduleSlotKey, setDragOverScheduleSlotKey] = useState<string | null>(null);
+
+  // Drag Handlers for Class Cards
+  const handleClassCardDragStart = (e: React.DragEvent, index: number, cls: ClassRoom) => {
+    setDraggedClassIndex(index);
+    setDraggedCardClass(cls);
+    e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'CLASS_CARD', id: cls.id, name: cls.name, grade: cls.grade_level }));
+    e.dataTransfer.effectAllowed = 'copyMove';
+  };
+
+  const handleClassCardDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    if (draggedClassIndex !== null && draggedClassIndex !== index) {
+      setDragOverClassIndex(index);
+    }
+  };
+
+  const handleClassCardDrop = (e: React.DragEvent, targetIndex: number) => {
+    e.preventDefault();
+    setDragOverClassIndex(null);
+
+    if (draggedClassIndex === null || draggedClassIndex === targetIndex) {
+      setDraggedClassIndex(null);
+      setDraggedCardClass(null);
+      return;
+    }
+
+    const newClasses = [...classes];
+    const [movedClass] = newClasses.splice(draggedClassIndex, 1);
+    newClasses.splice(targetIndex, 0, movedClass);
+
+    setClasses(newClasses);
+    samsDb.saveClasses(newClasses);
+    setDraggedClassIndex(null);
+    setDraggedCardClass(null);
+    setSuccessText('تم تحديث ترتيب المجموعات بنجاح');
+    setTimeout(() => setSuccessText(''), 3000);
+  };
+
+  // Delete a specific schedule slot
+  const handleDeleteScheduleSlot = (entryKey: string) => {
+    const currentSched = isEditingSchedule ? editingSchedule : schedule;
+    if (!currentSched) return;
+
+    const newSched: CenterScheduleData = JSON.parse(JSON.stringify(currentSched));
+    if (newSched.entries && newSched.entries[entryKey]) {
+      delete newSched.entries[entryKey];
+      if (isEditingSchedule) {
+        setEditingSchedule(newSched);
+      } else {
+        setSchedule(newSched);
+        samsDb.saveCenterSchedule(newSched);
+      }
+      setSuccessText('تم تفريغ وحذف الحصة من الجدول بنجاح');
+      setTimeout(() => setSuccessText(''), 3000);
+    }
+  };
+
+  // Drag Handlers for Schedule Table Slots
+  const handleScheduleSlotDragStart = (e: React.DragEvent, slotKey: string, val: string) => {
+    if (!val) return;
+    setDraggedScheduleSlot({ key: slotKey, val });
+    e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'SCHEDULE_SLOT', key: slotKey, val }));
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleScheduleSlotDragOver = (e: React.DragEvent, slotKey: string) => {
+    e.preventDefault();
+    setDragOverScheduleSlotKey(slotKey);
+  };
+
+  const handleScheduleSlotDrop = (e: React.DragEvent, targetSlotKey: string) => {
+    e.preventDefault();
+    setDragOverScheduleSlotKey(null);
+
+    const dataRaw = e.dataTransfer.getData('text/plain');
+    let dataPayload: any = null;
+    try {
+      if (dataRaw) dataPayload = JSON.parse(dataRaw);
+    } catch {
+      // ignore
+    }
+
+    const currentSched = isEditingSchedule ? editingSchedule : schedule;
+    if (!currentSched) return;
+
+    const newSched: CenterScheduleData = JSON.parse(JSON.stringify(currentSched));
+    if (!newSched.entries) newSched.entries = {};
+
+    if (dataPayload?.type === 'CLASS_CARD' || draggedCardClass) {
+      const clsToAssign = draggedCardClass || (dataPayload ? { name: dataPayload.name, grade_level: dataPayload.grade } : null);
+      if (clsToAssign) {
+        newSched.entries[targetSlotKey] = `${clsToAssign.name}||${clsToAssign.grade_level}`;
+        if (isEditingSchedule) {
+          setEditingSchedule(newSched);
+        } else {
+          setSchedule(newSched);
+          samsDb.saveCenterSchedule(newSched);
+        }
+        setSuccessText(`تم إضافة موعد مجموعة (${clsToAssign.name}) في جدول الحصص بنجاح`);
+        setTimeout(() => setSuccessText(''), 3000);
+      }
+    } else if (dataPayload?.type === 'SCHEDULE_SLOT' || draggedScheduleSlot) {
+      const sourceKey = draggedScheduleSlot?.key || dataPayload?.key;
+      const sourceVal = draggedScheduleSlot?.val || dataPayload?.val;
+
+      if (sourceKey && sourceKey !== targetSlotKey && sourceVal) {
+        const targetVal = newSched.entries[targetSlotKey] || '';
+        newSched.entries[targetSlotKey] = sourceVal;
+        if (targetVal) {
+          newSched.entries[sourceKey] = targetVal;
+        } else {
+          delete newSched.entries[sourceKey];
+        }
+
+        if (isEditingSchedule) {
+          setEditingSchedule(newSched);
+        } else {
+          setSchedule(newSched);
+          samsDb.saveCenterSchedule(newSched);
+        }
+        setSuccessText('تم نقل الحصة وتعديل ترتيب المجموعات بجدول الحصص بنجاح');
+        setTimeout(() => setSuccessText(''), 3000);
+      }
+    }
+
+    setDraggedScheduleSlot(null);
+    setDraggedCardClass(null);
+  };
+
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 2 * 1024 * 1024) {
+        alert('حجم الصورة كبير جداً. يرجى اختيار صورة أقل من 2 ميجابايت.');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          const val = event.target.result as string;
+          setPrintHeaderLogo(val);
+          localStorage.setItem('sams_custom_app_logo_v2', val);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const updatePrintTitle = (val: string) => {
+    setPrintHeaderTitle(val);
+    localStorage.setItem('sams_custom_header_title_v2', val);
+  };
+
+  const updatePrintSubtitle = (val: string) => {
+    setPrintHeaderSubtitle(val);
+    localStorage.setItem('sams_custom_header_subtitle_v2', val);
+  };
+
+  const updatePrintContact = (val: string) => {
+    setPrintHeaderContact(val);
+    localStorage.setItem('sams_custom_header_contact_v2', val);
+  };
+
+  const updateLogoAlign = (align: 'right' | 'center' | 'left') => {
+    setPrintLogoAlign(align);
+    localStorage.setItem('sams_custom_header_logo_align_v2', align);
+  };
+
+  // Add Student Form State inside Group View
+  const [newStudentForm, setNewStudentForm] = useState<{
+    name: string;
+    gender?: 'male' | 'female';
+    phone: string;
+    parent_name: string;
+    parent_phone: string;
+    grade_level: string;
+    birth_date: string;
+    status: 'active' | 'suspended' | 'archived';
+  }>({
+    name: '',
+    gender: undefined,
+    phone: '',
+    parent_name: '',
+    parent_phone: '',
+    grade_level: 'الأول الإعدادي',
+    birth_date: '2016-01-01',
+    status: 'active'
+  });
+
+  // Calculate attendance statistics for a student
+  const getStudentAttendanceStats = (studentId: string) => {
+    const records = samsDb.getAttendance().filter(a => a.student_id === studentId);
+    if (records.length === 0) {
+      return { total: 0, present: 0, absent: 0, percentage: 100 };
+    }
+    const total = records.length;
+    const present = records.filter(a => a.status === 'present').length;
+    const absent = records.filter(a => a.status === 'absent').length;
+    const percentage = Math.round((present / total) * 100);
+    return { total, present, absent, percentage };
+  };
+
+  // Calculate fee status for a student with detailed monthly breakdown
+  const getStudentFeeStatus = (studentId: string) => {
+    const payments = samsDb.getFees().filter(p => p.student_id === studentId);
+    const recentMonths = ['يوليو 2026', 'أغسطس 2026', 'سبتمبر 2026'];
+    const currentMonth = 'أغسطس 2026';
+    
+    const monthlyStatus = recentMonths.map(m => {
+      const payment = payments.find(p => p.month === m);
+      return {
+        month: m,
+        monthName: m.split(' ')[0],
+        isPaid: !!payment,
+        amount: payment ? payment.amount : 0,
+        receipt: payment ? payment.receipt_number : null,
+        isCurrent: m === currentMonth
+      };
+    });
+
+    const isCurrentPaid = monthlyStatus.find(m => m.month === currentMonth)?.isPaid || false;
+    const paidSum = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+
+    return {
+      label: isCurrentPaid ? `مسدد (${paidSum} ج.م)` : 'غير مسدد',
+      isPaid: isCurrentPaid,
+      totalAmount: paidSum,
+      monthlyStatus,
+      isCurrentPaid
+    };
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  useEffect(() => {
+    if (errorText) {
+      const timer = setTimeout(() => {
+        setErrorText('');
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [errorText]);
+
+  useEffect(() => {
+    if (successText) {
+      const timer = setTimeout(() => {
+        setSuccessText('');
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [successText]);
+
+  const confirmDeleteClass = () => {
+    if (classToDelete) {
+      const res = samsDb.deleteClass(classToDelete.id);
+      if (res.success) {
+        setSuccessText(`تم حذف المجموعة "${classToDelete.name}" بنجاح!`);
+        setClassToDelete(null);
+        loadData();
+      } else {
+        setErrorText(res.error || 'فشل حذف المجموعة.');
+        setClassToDelete(null);
+      }
+    }
+  };
+
+  const handleProcessAction = (text: string, onComplete: () => void) => {
+    setIsProcessing(true);
+    setProcessingProgress(0);
+    setProcessingText(text);
+    
+    let progress = 0;
+    const interval = setInterval(() => {
+      progress += Math.floor(Math.random() * 25) + 15;
+      if (progress >= 100) {
+        progress = 100;
+        setProcessingProgress(progress);
+        clearInterval(interval);
+        
+        setTimeout(() => {
+          setIsProcessing(false);
+          setProcessingProgress(0);
+          setTimeout(() => {
+            onComplete();
+          }, 150);
+        }, 200);
+      } else {
+        setProcessingProgress(progress);
+      }
+    }, 80);
+  };
+
+  useSamsDbSync(() => {
+    loadData();
+  });
+
+  const loadData = () => {
+    const updatedClasses = samsDb.getVisibleClasses();
+    setClasses(updatedClasses);
+    setStudents(samsDb.getVisibleStudents());
+    setTeachers(samsDb.getTeachers());
+    setSubjects(samsDb.getSubjects());
+    setSchedule(samsDb.getCenterSchedule());
+
+    // Keep selectedClassForStudents synced
+    setSelectedClassForStudents(prev => {
+      if (!prev) return null;
+      return updatedClasses.find(c => c.id === prev.id) || prev;
+    });
+  };
+
+  const handleCreateClass = (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorText('');
+
+    if (!classForm.name) {
+      setErrorText('يرجى تحديد اسم للمجموعة الدراسية.');
+      return;
+    }
+    if (!classForm.schedule_days || classForm.schedule_days.trim() === '') {
+      setErrorText('يرجى تحديد أيام المجموعة الدراسية.');
+      return;
+    }
+    const daysArr = classForm.schedule_days.split('، ').filter(Boolean);
+    const missingTimes = daysArr.some(day => !classForm.day_times[day] || classForm.day_times[day].trim() === '');
+    if (missingTimes) {
+      setErrorText('يرجى تحديد وقت المجموعة لكل يوم تم اختياره.');
+      return;
+    }
+    
+    if (!classForm.grade_level) {
+      setErrorText('يرجى تحديد الصف الدراسي للمجموعة.');
+      return;
+    }
+
+    const formatTime12 = (rawTime: string) => {
+      if (!rawTime) return '--';
+      const [h, m] = rawTime.split(':');
+      const hInt = parseInt(h, 10);
+      const ampm = hInt >= 12 ? 'م' : 'ص';
+      let h12 = hInt % 12;
+      if (h12 === 0) h12 = 12;
+      return `${h12}:${m} ${ampm}`;
+    };
+
+    const timeToDaysMap: Record<string, string[]> = {};
+    daysArr.forEach(day => {
+      const rawTime = classForm.day_times[day] || '';
+      const formattedT = formatTime12(rawTime);
+      if (!timeToDaysMap[formattedT]) {
+        timeToDaysMap[formattedT] = [];
+      }
+      timeToDaysMap[formattedT].push(day);
+    });
+
+    const formattedScheduleTime = Object.entries(timeToDaysMap).map(([t, days]) => {
+      return `${days.join(' - ')} (${t})`;
+    }).join(' | ');
+
+    const newCls: ClassRoom = {
+      id: `c-${Date.now()}`,
+      name: classForm.name,
+      schedule_days: classForm.schedule_days,
+      schedule_time: formattedScheduleTime,
+      capacity: 0,
+      grade_level: classForm.grade_level,
+      education_type: classForm.education_type || 'عام'
+    };
+
+    samsDb.addClass(newCls);
+    setClassForm({
+      name: '',
+      schedule_days: '',
+      schedule_time: '',
+      day_times: {},
+      grade_level: 'الأول الإعدادي',
+      education_type: 'عام'
+    });
+    setUnifiedTime('');
+    setShowAddClass(false);
+    loadData();
+  };
+
+  const startEditingClass = (cls: ClassRoom) => {
+    setErrorText('');
+    setEditingClass(cls);
+    setEditClassForm({
+      name: cls.name,
+      schedule_days: cls.schedule_days || '',
+      schedule_time: cls.schedule_time || '',
+      day_times: {},
+      grade_level: cls.grade_level || 'الأول الإعدادي',
+      education_type: cls.education_type || 'عام'
+    });
+    setEditUnifiedTime('');
+  };
+
+  const handleUpdateClass = (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorText('');
+
+    if (!editingClass) return;
+
+    if (!editClassForm.name.trim()) {
+      setErrorText('يرجى تحديد اسم للمجموعة الدراسية.');
+      return;
+    }
+    if (!editClassForm.schedule_days || editClassForm.schedule_days.trim() === '') {
+      setErrorText('يرجى تحديد أيام المجموعة الدراسية.');
+      return;
+    }
+
+    const daysArr = editClassForm.schedule_days.split('، ').filter(Boolean);
+    let formattedScheduleTime = editClassForm.schedule_time;
+
+    const missingTimes = daysArr.some(day => !editClassForm.day_times[day] || editClassForm.day_times[day].trim() === '');
+    if (!missingTimes && daysArr.length > 0) {
+      const formatTime12 = (rawTime: string) => {
+        if (!rawTime) return '--';
+        const [h, m] = rawTime.split(':');
+        const hInt = parseInt(h, 10);
+        const ampm = hInt >= 12 ? 'م' : 'ص';
+        let h12 = hInt % 12;
+        if (h12 === 0) h12 = 12;
+        return `${h12}:${m} ${ampm}`;
+      };
+
+      const timeToDaysMap: Record<string, string[]> = {};
+      daysArr.forEach(day => {
+        const rawTime = editClassForm.day_times[day] || '';
+        const formattedT = formatTime12(rawTime);
+        if (!timeToDaysMap[formattedT]) {
+          timeToDaysMap[formattedT] = [];
+        }
+        timeToDaysMap[formattedT].push(day);
+      });
+
+      formattedScheduleTime = Object.entries(timeToDaysMap).map(([t, days]) => {
+        return `${days.join(' - ')} (${t})`;
+      }).join(' | ');
+    }
+
+    const updatedCls: ClassRoom = {
+      ...editingClass,
+      name: editClassForm.name.trim(),
+      schedule_days: editClassForm.schedule_days,
+      schedule_time: formattedScheduleTime || editingClass.schedule_time,
+      grade_level: editClassForm.grade_level,
+      education_type: editClassForm.education_type || 'عام'
+    };
+
+    const res = samsDb.updateClass(updatedCls);
+    if (res.success) {
+      setSuccessText(`تم تعديل بيانات المجموعة الدراسية (${updatedCls.name}) بنجاح`);
+      setTimeout(() => setSuccessText(''), 3000);
+      setEditingClass(null);
+      loadData();
+    } else {
+      setErrorText(res.error || 'حدث خطأ أثناء تعديل المجموعة.');
+    }
+  };
+
+  // Full Page Archive View
+  if (showArchiveModal) {
+    return (
+      <div className="space-y-6 animate-fade-in" dir="rtl">
+        {/* Header */}
+        <div className="bg-white dark:bg-slate-800 rounded-3xl p-4 sm:p-6 border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => setShowArchiveModal(false)}
+              className="px-4 py-2 bg-slate-100 dark:bg-slate-900/50 hover:bg-slate-200 dark:hover:bg-slate-900 text-slate-700 dark:text-slate-300 rounded-xl transition-colors cursor-pointer flex items-center gap-2 font-bold text-sm"
+            >
+              <ArrowRight className="w-5 h-5" />
+              <span>رجوع</span>
+            </button>
+            <div className="w-12 h-12 bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 rounded-2xl flex items-center justify-center border border-amber-200 dark:border-amber-800">
+              <Archive className="w-6 h-6" />
+            </div>
+            <div>
+              <h2 className="text-xl font-black text-slate-900 dark:text-white">أرشيف الطلاب المؤرشفين</h2>
+              <p className="text-sm text-slate-500 dark:text-slate-400 font-sans">إدارة واستعادة أو حذف بيانات الطلاب نهائياً</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-800 rounded-3xl p-4 sm:p-6 border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col h-[70vh]">
+          {/* Search */}
+          <div className="relative shrink-0 mb-6">
+            <Search className="w-5 h-5 text-slate-400 absolute right-4 top-3.5" />
+            <input
+              type="text"
+              value={archivedSearchTerm}
+              onChange={(e) => setArchivedSearchTerm(e.target.value)}
+              placeholder="بحث في الطلاب المؤرشفين بالاسم أو رقم القيد..."
+              className="w-full bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 rounded-xl pr-12 pl-4 py-3 text-sm focus:outline-none focus:border-amber-500 dark:focus:border-amber-600 font-sans transition-colors"
+            />
+          </div>
+
+          {/* Archived list */}
+          <div className="overflow-y-auto flex-1 space-y-3 pr-1">
+            {(() => {
+              const archivedList = samsDb.getArchivedStudents().filter(st => 
+                !archivedSearchTerm || 
+                st.name.includes(archivedSearchTerm) || 
+                st.registration_id.includes(archivedSearchTerm)
+              );
+
+              if (archivedList.length === 0) {
+                return (
+                  <div className="text-center py-20 text-slate-400 space-y-3">
+                    <Archive className="w-16 h-16 mx-auto text-slate-300 dark:text-slate-600" />
+                    <p className="text-sm font-bold text-slate-500 dark:text-slate-400">لا يوجد طلاب في الأرشيف حالياً</p>
+                  </div>
+                );
+              }
+
+              return (
+                <>
+                  {/* Mobile Card View */}
+                  <div className="md:hidden flex flex-col gap-3 overflow-y-auto max-h-[calc(100vh-250px)] pb-10">
+                    {archivedList.map(st => (
+                      <div key={st.id} className="p-4 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 rounded-2xl flex flex-col gap-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-full bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 flex items-center justify-center shrink-0 text-amber-500">
+                              <Archive className="w-5 h-5 opacity-50" />
+                            </div>
+                            <div>
+                              <p className="font-bold text-slate-800 dark:text-slate-100 text-sm leading-tight">{st.name}</p>
+                              <div className="flex items-center gap-2 mt-1">
+                                <p className="text-[10px] font-mono text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded-sm">#{st.registration_id}</p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-2 text-xs text-slate-600 dark:text-slate-400 bg-white dark:bg-slate-800 p-2.5 rounded-xl border border-slate-100 dark:border-slate-700/50">
+                          <div className="flex flex-col gap-1">
+                            <span className="text-[10px] text-slate-400 font-semibold">الصف الدراسي</span>
+                            <span className="font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1"><BookOpen className="w-3.5 h-3.5" /> {st.grade_level}</span>
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <span className="text-[10px] text-slate-400 font-semibold">رقم الهاتف</span>
+                            <span className="flex items-center gap-1 font-mono font-bold text-slate-700 dark:text-slate-300"><Phone className="w-3.5 h-3.5" /> {st.phone || st.parent_phone || '-'}</span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 pt-2 border-t border-slate-200 dark:border-slate-700/50">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              samsDb.restoreStudent(st.id);
+                              loadData();
+                              setSuccessText(`تمت استعادة الطالب (${st.name}) بنجاح وإعادته للقائمة النشطة.`);
+                            }}
+                            className="flex-1 py-2 bg-emerald-50 dark:bg-emerald-900/40 hover:bg-emerald-100 dark:hover:bg-emerald-900 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>استعادة</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setArchivedStudentToPermanentDelete(st)}
+                            className="flex-1 py-2 bg-rose-50 dark:bg-rose-900/40 hover:bg-rose-100 dark:hover:bg-rose-900 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>حذف نهائي</span>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Desktop Table View */}
+                  <div className="hidden md:block overflow-auto max-h-[calc(100vh-250px)] rounded-xl border border-slate-200 dark:border-slate-700 shadow-xs">
+                    <table className="w-full text-sm text-right relative border-collapse min-w-[800px]">
+                      <thead className="sticky top-0 z-20">
+                        <tr className="bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-extrabold border-b-2 border-slate-300 dark:border-slate-700 shadow-xs whitespace-nowrap">
+                          <th className="px-3 sm:px-4 py-2.5 sm:py-3.5 text-xs sm:text-sm pr-6 sticky top-0 z-20 bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-xs">م</th>
+                          <th className="px-3 sm:px-4 py-2.5 sm:py-3.5 text-xs sm:text-sm min-w-[200px] sticky top-0 z-20 bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-xs">بيانات الطالب</th>
+                          <th className="px-3 sm:px-4 py-2.5 sm:py-3.5 text-xs sm:text-sm min-w-[150px] sticky top-0 z-20 bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-xs">الصف الدراسي</th>
+                          <th className="px-3 sm:px-4 py-2.5 sm:py-3.5 text-xs sm:text-sm min-w-[140px] sticky top-0 z-20 bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-xs">رقم هاتف الطالب / ولي الأمر</th>
+                          <th className="px-3 sm:px-4 py-2.5 sm:py-3.5 text-xs sm:text-sm text-left pl-6 min-w-[160px] sticky top-0 z-20 bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-xs">إجراءات التحكم</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800 whitespace-nowrap">
+                        {archivedList.map((st, index) => (
+                          <tr key={st.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/50 transition-colors">
+                            <td className="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm pr-6 text-xs text-slate-400 font-mono">
+                              {(index + 1).toString().padStart(2, '0')}
+                            </td>
+                            <td className="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm">
+                              <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-full bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 flex items-center justify-center shrink-0 text-amber-500 font-bold text-sm sm:text-base sm:text-lg">
+                                  <Archive className="w-5 h-5 opacity-50" />
+                                </div>
+                                <div>
+                                  <p className="font-bold text-slate-800 dark:text-slate-100 text-sm leading-tight">{st.name}</p>
+                                  <div className="flex items-center gap-2 mt-1">
+                                    <p className="text-[10px] font-mono text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded-sm">#{st.registration_id}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm">
+                              <div className="flex flex-col gap-1">
+                                <span className="font-bold text-slate-700 dark:text-slate-300 text-xs flex items-center gap-1"><BookOpen className="w-3.5 h-3.5" /> {st.grade_level}</span>
+                              </div>
+                            </td>
+                            <td className="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm">
+                              <div className="flex flex-col gap-1 text-slate-600 dark:text-slate-400">
+                                <span className="flex items-center gap-1 font-mono text-xs"><Phone className="w-3.5 h-3.5" /> {st.phone || st.parent_phone || '-'}</span>
+                              </div>
+                            </td>
+                            <td className="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm text-left pl-6">
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    samsDb.restoreStudent(st.id);
+                                    loadData();
+                                    setSuccessText(`تمت استعادة الطالب (${st.name}) بنجاح وإعادته للقائمة النشطة.`);
+                                  }}
+                                  className="px-3 py-1.5 bg-emerald-50 dark:bg-emerald-900/40 hover:bg-emerald-100 dark:hover:bg-emerald-900 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
+                                >
+                                  <RotateCcw className="w-3.5 h-3.5" />
+                                  <span>استعادة</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setArchivedStudentToPermanentDelete(st)}
+                                  className="px-3 py-1.5 bg-rose-50 dark:bg-rose-900/40 hover:bg-rose-100 dark:hover:bg-rose-900 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>حذف نهائي</span>
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+
+        {/* Permanent Delete Modal for Archive view handled globally below */}
+      </div>
+    );
+  }
+
+  // Dedicated Group Students Full View Render
+  if (selectedClassForStudents) {
+    const currentClassStudents = students.filter(s => s.class_id === selectedClassForStudents.id);
+    
+    // Filtered students based on search and filters
+    const filteredGroupStudents = currentClassStudents.filter(student => {
+      const searchLower = studentSearchTerm.trim().toLowerCase();
+      const matchesSearch = !searchLower || (
+        student.name.toLowerCase().includes(searchLower) ||
+        student.registration_id.toLowerCase().includes(searchLower) ||
+        (student.phone && student.phone.includes(searchLower)) ||
+        (student.parent_phone && student.parent_phone.includes(searchLower)) ||
+        (student.parent_name && student.parent_name.toLowerCase().includes(searchLower))
+      );
+
+      const matchesStatus = studentStatusFilter === 'all' || student.status === studentStatusFilter;
+
+      const attStats = getStudentAttendanceStats(student.id);
+      let matchesAttendance = true;
+      if (attendanceFilter === 'excellent') {
+        matchesAttendance = attStats.percentage >= 90;
+      } else if (attendanceFilter === 'warning') {
+        matchesAttendance = attStats.absent >= 3;
+      }
+
+      return matchesSearch && matchesStatus && matchesAttendance;
+    });
+
+    const totalStudents = currentClassStudents.length;
+    const activeCount = currentClassStudents.filter(s => s.status === 'active').length;
+    const warningAbsenceCount = currentClassStudents.filter(s => getStudentAttendanceStats(s.id).absent >= 3).length;
+    
+    const totalAttRecords = currentClassStudents.reduce((acc, s) => acc + getStudentAttendanceStats(s.id).total, 0);
+    const totalPresentRecords = currentClassStudents.reduce((acc, s) => acc + getStudentAttendanceStats(s.id).present, 0);
+    const groupAvgAttendance = totalAttRecords > 0 ? Math.round((totalPresentRecords / totalAttRecords) * 100) : 100;
+
+
+    if (selectedStudentForReport) {
+      return (
+        <StudentFullReport
+          student={selectedStudentForReport}
+          onClose={() => setSelectedStudentForReport(null)}
+        />
+      );
+    }
+
+    if (showPrintRosterModal) {
+      return (
+        <div className="space-y-6 animate-fade-in bg-white dark:bg-slate-800 p-4 sm:p-6 rounded-3xl" id="print_roster_dedicated_page" dir="rtl">
+
+      {/* Global Processing Progress Overlay */}
+      <AnimatePresence>
+        {isProcessing && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4 no-print print:hidden"
+            dir="rtl"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white dark:bg-slate-800 p-8 rounded-3xl shadow-2xl max-w-sm w-full text-center space-y-6"
+            >
+              <div className="w-16 h-16 bg-amber-50 dark:bg-amber-900/40 rounded-2xl mx-auto flex items-center justify-center">
+                <motion.div
+                  animate={{ rotate: 360 }}
+                  transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+                >
+                  <RefreshCw className="w-8 h-8 text-amber-500" />
+                </motion.div>
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-sm sm:text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100">{processingText}</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 font-sans">يرجى الانتظار، جاري معالجة البيانات...</p>
+              </div>
+              
+              <div className="space-y-2">
+                <div className="h-3 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                  <motion.div 
+                    className="h-full bg-amber-500"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${processingProgress}%` }}
+                    transition={{ duration: 0.2 }}
+                  />
+                </div>
+                <div className="flex justify-between text-xs font-bold text-slate-600 dark:text-slate-300 font-mono">
+                  <span>{processingProgress}%</span>
+                  <span>100%</span>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between border-b border-slate-100 dark:border-slate-700 pb-4 gap-4 no-print">
+            <div className="flex items-center gap-3">
+              <button 
+                onClick={() => setShowPrintRosterModal(false)}
+                className="p-2.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-200 rounded-xl cursor-pointer ml-2 flex items-center gap-1.5"
+                title="رجوع"
+              >
+                 <ArrowRight className="w-5 h-5" /><span className="font-bold text-sm">رجوع</span>
+              </button>
+              <div className="p-2.5 bg-amber-100 text-amber-800 dark:text-amber-300 rounded-2xl">
+                <Printer className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-slate-900 dark:text-slate-50 text-sm sm:text-base sm:text-lg">معاينة وتصدير كشف المجموعة كـ PDF</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 font-sans">تنسيق طباعة رسمي بكافة بيانات طلاب المجموعة</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowHeaderSettings(!showHeaderSettings)}
+                className={`px-3.5 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2 border transition-all cursor-pointer ${
+                  showHeaderSettings
+                    ? 'bg-amber-100 text-amber-900 border-amber-300'
+                    : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-800 dark:text-slate-100 border-slate-200 dark:border-slate-700'
+                }`}
+              >
+                <Sliders className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                <span>تخصيص الشعار والترويسة 🎨</span>
+                {showHeaderSettings ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="px-5 py-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs rounded-xl shadow-md flex items-center gap-2 cursor-pointer transition-transform active:scale-95"
+              >
+                <Printer className="w-4 h-4 text-slate-950" />
+                <span>طباعة الآن / حفظ كـ PDF</span>
+              </button>
+            </div>
+          </div>
+{/* Header & Logo Customization Panel (no-print) */}
+                {showHeaderSettings && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="p-4 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 rounded-2xl space-y-4 font-sans no-print text-xs"
+                  >
+                    <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-700 pb-2">
+                      <span className="font-extrabold text-slate-900 dark:text-slate-50 flex items-center gap-2">
+                        <ImageIcon className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                        إعدادات الترويسة وشعار السنتر المطبوع
+                      </span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400">التغييرات تحفظ تلقائياً لكافة التقارير</span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {/* Logo Section */}
+                      <div className="space-y-2 bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700">
+                        <label className="block font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100">1. شعار السنتر (Logo):</label>
+                        <div className="flex items-center gap-3">
+                          {printHeaderLogo ? (
+                            <img src={printHeaderLogo} alt="شعار السنتر" className="w-12 h-12 object-contain rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50" />
+                          ) : (
+                            <div className="w-12 h-12 bg-amber-100 border border-amber-300 rounded-lg flex items-center justify-center font-bold text-amber-800 dark:text-amber-300 text-sm sm:text-base sm:text-lg">
+                              {printHeaderTitle ? printHeaderTitle.charAt(0) : 'س'}
+                            </div>
+                          )}
+                          <div className="flex flex-col gap-1.5 flex-1">
+                            <label className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold rounded-lg text-center cursor-pointer transition-all flex items-center justify-center gap-1.5">
+                              <Upload className="w-3.5 h-3.5" />
+                              <span>رفع شعار من جهازك</span>
+                              <input type="file" accept="image/*" onChange={handleLogoUpload} className="hidden" />
+                            </label>
+                            {printHeaderLogo && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPrintHeaderLogo('');
+                                  localStorage.removeItem('sams_custom_app_logo_v2');
+                                }}
+                                className="text-[10px] text-rose-600 dark:text-rose-400 hover:underline text-center"
+                              >
+                                إزالة الشعار
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Preset logos */}
+                        <div className="pt-2 border-t border-slate-100 dark:border-slate-700">
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 block mb-1">أو اختر من الشعارات الجاهزة:</span>
+                          <div className="flex flex-wrap gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const preset = 'https://images.unsplash.com/photo-1546410531-bb4caa6b424d?w=120&auto=format&fit=crop&q=80';
+                                setPrintHeaderLogo(preset);
+                                localStorage.setItem('sams_custom_app_logo_v2', preset);
+                              }}
+                              className="px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-amber-900/40 text-[10px] font-bold rounded-md border border-slate-200 dark:border-slate-700"
+                            >
+                              🎓 أكاديمي
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const preset = 'https://images.unsplash.com/photo-1456513080510-7bf3a84b82f8?w=120&auto=format&fit=crop&q=80';
+                                setPrintHeaderLogo(preset);
+                                localStorage.setItem('sams_custom_app_logo_v2', preset);
+                              }}
+                              className="px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-amber-900/40 text-[10px] font-bold rounded-md border border-slate-200 dark:border-slate-700"
+                            >
+                              📚 كتب وتفوق
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const preset = 'https://images.unsplash.com/photo-1503676260728-1c00da094a0b?w=120&auto=format&fit=crop&q=80';
+                                setPrintHeaderLogo(preset);
+                                localStorage.setItem('sams_custom_app_logo_v2', preset);
+                              }}
+                              className="px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-amber-900/40 text-[10px] font-bold rounded-md border border-slate-200 dark:border-slate-700"
+                            >
+                              🖋️ قلم وقراءة
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Header Titles */}
+                      <div className="space-y-2 bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 md:col-span-2">
+                        <label className="block font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100">2. النصوص والترويسة المطبوعة:</label>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          <div>
+                            <span className="text-[10px] text-slate-500 dark:text-slate-400 block">عنوان السنتر الرئيسي:</span>
+                            <input
+                              type="text"
+                              value={printHeaderTitle}
+                              onChange={(e) => updatePrintTitle(e.target.value)}
+                              placeholder="مثال: سنتر التفوق للتعليم"
+                              className="w-full min-w-[200px] max-w-full flex-1 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 rounded-lg p-2 font-bold text-slate-900 dark:text-slate-50 focus:outline-none focus:border-amber-500"
+                            />
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 dark:text-slate-400 block">الوصف أو النص الفرعي:</span>
+                            <input
+                              type="text"
+                              value={printHeaderSubtitle}
+                              onChange={(e) => updatePrintSubtitle(e.target.value)}
+                              placeholder="مثال: سجل كشوفات المجموعات التعليمية"
+                              className="w-full min-w-[200px] max-w-full flex-1 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 rounded-lg p-2 font-medium text-slate-700 dark:text-slate-200 focus:outline-none focus:border-amber-500"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-2 pt-2 border-t border-slate-100 dark:border-slate-700">
+                          <div className="md:col-span-2">
+                            <span className="text-[10px] text-slate-500 dark:text-slate-400 block">بيانات التواصل والفرع:</span>
+                            <input
+                              type="text"
+                              value={printHeaderContact}
+                              onChange={(e) => updatePrintContact(e.target.value)}
+                              placeholder="مثال: هاتف: 01000000000 - الفرع الرئيسي"
+                              className="w-full min-w-[200px] max-w-full flex-1 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 rounded-lg p-1.5 text-[11px] text-slate-700 dark:text-slate-200 focus:outline-none focus:border-amber-500"
+                            />
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 dark:text-slate-400 block">محاذاة الترويسة:</span>
+                            <div className="flex gap-1">
+                              <button
+                                type="button"
+                                onClick={() => updateLogoAlign('right')}
+                                className={`flex-1 py-1.5 rounded-md font-bold text-[10px] border ${
+                                  printLogoAlign === 'right' ? 'bg-amber-500 text-slate-950 border-amber-600' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700'
+                                }`}
+                              >
+                                يمين
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => updateLogoAlign('center')}
+                                className={`flex-1 py-1.5 rounded-md font-bold text-[10px] border ${
+                                  printLogoAlign === 'center' ? 'bg-amber-500 text-slate-950 border-amber-600' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700'
+                                }`}
+                              >
+                                وسط
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => updateLogoAlign('left')}
+                                className={`flex-1 py-1.5 rounded-md font-bold text-[10px] border ${
+                                  printLogoAlign === 'left' ? 'bg-amber-500 text-slate-950 border-amber-600' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700'
+                                }`}
+                              >
+                                يسار
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+
+                {/* PRINTABLE CONTAINER AREA */}
+                <div id="printable-group-roster" className="space-y-6 bg-white dark:bg-slate-800 p-4 sm:p-6 rounded-2xl border border-slate-200 dark:border-slate-700">
+                  {/* Dynamic Header section */}
+                  <div
+                    className={`flex items-center justify-between border-b-2 border-slate-800 pb-4 ${
+                      printLogoAlign === 'center'
+                        ? 'flex-col text-center gap-3'
+                        : printLogoAlign === 'left'
+                        ? 'flex-row-reverse text-right'
+                        : 'flex-row text-right'
+                    }`}
+                  >
+                    <div className={`flex items-center gap-3.5 ${printLogoAlign === 'center' ? 'flex-col text-center' : ''}`}>
+                      {printHeaderLogo ? (
+                        <img src={printHeaderLogo} alt="شعار السنتر" className="w-16 h-16 object-contain rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 shrink-0" />
+                      ) : (
+                        <div className="w-14 h-14 bg-amber-500/10 border-2 border-amber-600 rounded-xl flex items-center justify-center text-amber-800 dark:text-amber-300 font-extrabold text-xl sm:text-2xl shrink-0">
+                          {printHeaderTitle ? printHeaderTitle.charAt(0) : 'س'}
+                        </div>
+                      )}
+                      <div>
+                        <h1 className="text-xl font-extrabold text-slate-900 dark:text-slate-50 leading-tight">{printHeaderTitle || 'سنتر التعليم والتفوق'}</h1>
+                        <p className="text-xs text-slate-600 dark:text-slate-300 font-medium mt-0.5">{printHeaderSubtitle}</p>
+                        {printHeaderContact && <p className="text-[11px] text-slate-500 dark:text-slate-400 font-sans mt-0.5">{printHeaderContact}</p>}
+                      </div>
+                    </div>
+
+                    <div className="text-center px-4 py-2 bg-slate-50 dark:bg-slate-900/50 border border-slate-300 dark:border-slate-600 dark:border-slate-600 rounded-xl shrink-0">
+                      <span className="text-xs font-bold text-slate-700 dark:text-slate-200 block">كشف طلاب رسمي</span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">{new Date().toLocaleDateString('ar-EG')}</span>
+                    </div>
+                  </div>
+
+                  {/* Group details grid */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-slate-50 dark:bg-slate-900/50 p-4 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-sans">
+                    <div>
+                      <span className="text-slate-500 dark:text-slate-400 block text-[10px]">اسم المجموعة:</span>
+                      <strong className="text-slate-900 dark:text-slate-50 font-bold">{selectedClassForStudents.name}</strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 dark:text-slate-400 block text-[10px]">الصف الدراسي:</span>
+                      <strong className="text-slate-900 dark:text-slate-50 font-bold">{selectedClassForStudents.grade_level}</strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 dark:text-slate-400 block text-[10px]">المواعيد والجدول:</span>
+                      <strong className="text-slate-900 dark:text-slate-50 font-bold">{formatScheduleDisplay(selectedClassForStudents.schedule_time, selectedClassForStudents.schedule_days)}</strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 dark:text-slate-400 block text-[10px]">عدد الطلاب:</span>
+                      <strong className="text-amber-700 dark:text-amber-300 font-bold">{filteredGroupStudents.length} طالب</strong>
+                    </div>
+                  </div>
+
+                  {/* Students table */}
+                  <div className="overflow-x-auto mask-edges">
+                    <table className="w-full text-right border-collapse border border-slate-300 dark:border-slate-600 dark:border-slate-600 text-xs">
+                      <thead>
+                        <tr className="bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-50 font-extrabold border-b border-slate-300 dark:border-slate-600 dark:border-slate-600">
+                          <th className="p-2 border border-slate-300 dark:border-slate-600 dark:border-slate-600 text-center w-10">#</th>
+                          <th className="p-2 border border-slate-300 dark:border-slate-600 dark:border-slate-600 w-24">رقم القيد</th>
+                          <th className="p-2 border border-slate-300 dark:border-slate-600 dark:border-slate-600">اسم الطالب الرباعي</th>
+                          <th className="p-2 border border-slate-300 dark:border-slate-600 dark:border-slate-600 w-28">هاتف ولي الأمر</th>
+                          <th className="p-2 border border-slate-300 dark:border-slate-600 dark:border-slate-600 w-20 text-center">الحضور %</th>
+                          <th className="p-2 border border-slate-300 dark:border-slate-600 dark:border-slate-600 w-24 text-center">الرسوم</th>
+                          <th className="p-2 border border-slate-300 dark:border-slate-600 dark:border-slate-600 w-32 text-center">ملاحظات / التوقيع</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredGroupStudents.map((st, idx) => {
+                          const att = getStudentAttendanceStats(st.id);
+                          const fee = getStudentFeeStatus(st.id);
+                          return (
+                            <tr key={st.id} className="border-b border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/50 font-sans">
+                              <td className="p-2 border border-slate-300 dark:border-slate-600 dark:border-slate-600 text-center font-bold text-slate-700 dark:text-slate-200">{idx + 1}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-600 dark:border-slate-600 font-mono text-slate-800 dark:text-slate-100 dark:text-slate-100">{st.registration_id}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-600 dark:border-slate-600 font-bold text-slate-900 dark:text-slate-50">{st.name}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-600 dark:border-slate-600 font-mono text-slate-700 dark:text-slate-200" dir="ltr">{st.parent_phone || st.phone || '-'}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-600 dark:border-slate-600 text-center font-bold">{att.percentage}%</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-600 dark:border-slate-600 text-center text-[11px] font-bold">
+                                {fee.isPaid ? 'مسدد' : 'غير مسدد'}
+                              </td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-600 dark:border-slate-600"></td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Footer signature */}
+                  <div className="pt-6 flex justify-between items-center text-xs text-slate-600 dark:text-slate-300 border-t border-slate-200 dark:border-slate-700 font-sans">
+                    <div>توقيع إشراف السنتر: ....................................</div>
+                    <div>اعتماد إدارة اللغة العربية: ....................................</div>
+                  </div>
+                </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-6 animate-fade-in" id="group_students_dedicated_page">
+
+      {/* Global Processing Progress Overlay */}
+      <AnimatePresence>
+        {isProcessing && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4 no-print print:hidden"
+            dir="rtl"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white dark:bg-slate-800 p-8 rounded-3xl shadow-2xl max-w-sm w-full text-center space-y-6"
+            >
+              <div className="w-16 h-16 bg-amber-50 dark:bg-amber-900/40 rounded-2xl mx-auto flex items-center justify-center">
+                <motion.div
+                  animate={{ rotate: 360 }}
+                  transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+                >
+                  <RefreshCw className="w-8 h-8 text-amber-500" />
+                </motion.div>
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-sm sm:text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100">{processingText}</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 font-sans">يرجى الانتظار، جاري معالجة البيانات...</p>
+              </div>
+              
+              <div className="space-y-2">
+                <div className="h-3 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                  <motion.div 
+                    className="h-full bg-amber-500"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${processingProgress}%` }}
+                    transition={{ duration: 0.2 }}
+                  />
+                </div>
+                <div className="flex justify-between text-xs font-bold text-slate-600 dark:text-slate-300 font-mono">
+                  <span>{processingProgress}%</span>
+                  <span>100%</span>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+        {/* Top Navigation & Group Header (Clean Mode-Aware) */}
+        <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm rounded-3xl p-4 sm:p-5 relative overflow-hidden">
+          {/* Card Header Row */}
+          <div className="flex items-center justify-between gap-2 mb-4 relative z-10 w-full">
+            <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+              <GraduationCap className="w-5 h-5 sm:w-6 sm:h-6 text-[#0D5C8C] dark:text-blue-400 shrink-0" />
+              <h2 className="text-sm sm:text-xl font-extrabold text-slate-900 dark:text-white truncate">
+                {selectedClassForStudents.name}
+              </h2>
+              <span className="px-1.5 py-0.5 rounded-md text-[9px] sm:text-[11px] font-bold bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800/50 shrink-0 whitespace-nowrap">
+                {selectedClassForStudents.grade_level}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSelectedClassForStudents(null)}
+              className="flex items-center gap-1 text-[10px] sm:text-xs text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-700/50 transition-colors bg-slate-50 dark:bg-slate-900/50 px-2 sm:px-3 py-1.5 rounded-lg shrink-0 border border-slate-200 dark:border-slate-700/50"
+              title="الرجوع إلى قائمة المجموعات"
+            >
+              <ArrowRight className="w-3.5 h-3.5" />
+              <span>رجوع</span>
+            </button>
+          </div>
+
+          {/* Action Buttons Grid */}
+          <div className="grid grid-cols-3 gap-1.5 sm:gap-2 mt-4 relative z-10">
+            <button
+              type="button"
+              onClick={() => {
+                setNewStudentForm({
+                  name: '',
+                  phone: '',
+                  parent_name: '',
+                  parent_phone: '',
+                  grade_level: selectedClassForStudents.grade_level || 'الأول الإعدادي',
+                  birth_date: '2016-01-01',
+                  status: 'active'
+                });
+                setShowAddStudentModal(true);
+              }}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 sm:py-2.5 rounded-xl flex items-center justify-center gap-1 sm:gap-1.5 text-[9px] sm:text-xs shadow-xs transition-all active:scale-95 cursor-pointer"
+            >
+              <UserPlus className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+              <span className="truncate">إضافة</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                const isAlsafa = typeof window !== 'undefined' && localStorage.getItem('sams_active_system') === 'alsafa';
+                const centerTitle = isAlsafa ? 'سيستم الصفا للمواد الشرعية' : 'سنتر الدكتور في اللغة العربية';
+                const sig = isAlsafa ? '#سيستم الصفا للمواد الشرعية' : '#سيستم الدكتور في اللغة العربية';
+                const defaultBroadcastMsg = `السلام عليكم ورحمة الله وبركاته،\nأولياء أمور الطلاب الكرام بمجموعة (${selectedClassForStudents.name}) - ${centerTitle}،\nتحية طيبة وبعد،\nنود إحاطتكم بجدول مواعيد المجموعة (${formatScheduleDisplay(selectedClassForStudents.schedule_time, selectedClassForStudents.schedule_days)}). نرجو التكرم بحث الطلاب على الانضباط والمتابعة المستمرة.\nشاكرين لكم حسن التعاون.\n\n${sig}`;
+                setGroupWhatsAppMsg(defaultBroadcastMsg);
+                setShowGroupWhatsAppModal(true);
+              }}
+              className="bg-slate-100 dark:bg-slate-700/50 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold py-2 sm:py-2.5 rounded-xl flex items-center justify-center gap-1 sm:gap-1.5 text-[9px] sm:text-xs border border-slate-200 dark:border-slate-600/50 transition-all active:scale-95 cursor-pointer"
+            >
+              <MessageCircle className="w-3.5 h-3.5 sm:w-4 sm:h-4 fill-current text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <span className="truncate">تنبيه</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowPrintRosterModal(true)}
+              className="bg-slate-100 dark:bg-slate-700/50 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold py-2 sm:py-2.5 rounded-xl flex items-center justify-center gap-1 sm:gap-1.5 text-[9px] sm:text-xs border border-slate-200 dark:border-slate-600/50 transition-all active:scale-95 cursor-pointer"
+              title="طباعة كشف طلاب المجموعة وتصديره كـ PDF"
+            >
+              <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#0D5C8C] dark:text-blue-400 shrink-0" />
+              <span className="truncate">طباعة</span>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setShowArchiveModal(true)}
+            className="w-full py-1.5 text-center text-[10px] sm:text-xs text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg mt-1.5 transition-colors flex items-center justify-center gap-1.5 relative z-10"
+            title="عرض الأرشيف والطلاب المؤرشفين"
+          >
+            <Archive className="w-3 h-3" />
+            <span>الأرشيف ({samsDb.getArchivedStudents().length})</span>
+          </button>
+
+          {/* Metadata Chips */}
+          <div className="grid grid-cols-3 gap-1.5 sm:gap-2 pt-2.5 mt-2.5 border-t border-slate-100 dark:border-slate-700 relative z-10">
+            <div className="flex flex-col items-center justify-center gap-0.5 bg-slate-50 dark:bg-slate-900/50 py-1.5 px-1 rounded-lg text-center border border-slate-100 dark:border-slate-700/50">
+              <Calendar className="w-3.5 h-3.5 text-[#0D5C8C] dark:text-blue-400" />
+              <span className="text-[10px] text-slate-700 dark:text-slate-300 font-bold truncate w-full">{formatScheduleDisplay(selectedClassForStudents.schedule_time, selectedClassForStudents.schedule_days)}</span>
+            </div>
+            
+            <div className="flex flex-col items-center justify-center gap-0.5 bg-slate-50 dark:bg-slate-900/50 py-1.5 px-1 rounded-lg text-center border border-slate-100 dark:border-slate-700/50">
+              <Users className="w-3.5 h-3.5 text-[#0D5C8C] dark:text-blue-400" />
+              <span className="text-[10px] text-slate-700 dark:text-slate-300 font-bold truncate w-full">{totalStudents} طالب</span>
+            </div>
+            
+            <div className="flex flex-col items-center justify-center gap-0.5 bg-slate-50 dark:bg-slate-900/50 py-1.5 px-1 rounded-lg text-center border border-slate-100 dark:border-slate-700/50">
+              <CheckCircle className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+              <span className="text-[10px] text-emerald-700 dark:text-emerald-400 font-bold truncate w-full">{groupAvgAttendance}%</span>
+            </div>
+          </div>
+        </div>
+        {/* Alerts & Messages */}
+        {errorText && (
+          <div className="p-4 bg-red-50 dark:bg-red-900/40 border border-red-200 text-[#C0152A] rounded-xl text-xs flex items-center gap-2">
+            <ShieldAlert className="w-4 h-4 text-[#E8192C] shrink-0" />
+            <span className="font-semibold">{errorText}</span>
+          </div>
+        )}
+        {successText && (
+          <div className="p-4 bg-emerald-50 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-700 text-emerald-800 dark:text-emerald-300 rounded-xl text-xs flex items-center gap-2">
+            <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span className="font-semibold">{successText}</span>
+          </div>
+        )}
+
+        {/* Analytics KPI Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-2xs space-y-1">
+            <div className="text-xs text-slate-500 dark:text-slate-400 font-sans">إجمالي طلاب المجموعة</div>
+            <div className="text-xl sm:text-2xl font-black text-slate-800 dark:text-slate-100 dark:text-slate-100 flex items-center justify-between">
+              <span>{totalStudents}</span>
+              <span className="text-xs bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-2 py-0.5 rounded-md font-normal">طالب</span>
+            </div>
+          </div>
+
+          <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-2xs space-y-1">
+            <div className="text-xs text-slate-500 dark:text-slate-400 font-sans">الطلاب النشطون بالحضور</div>
+            <div className="text-xl sm:text-2xl font-black text-emerald-600 flex items-center justify-between">
+              <span>{activeCount}</span>
+              <span className="text-xs bg-emerald-50 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-md font-bold">{Math.round((activeCount / (totalStudents || 1)) * 100)}%</span>
+            </div>
+          </div>
+
+          <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-2xs space-y-1">
+            <div className="text-xs text-slate-500 dark:text-slate-400 font-sans">متوسط حضور المجموعة</div>
+            <div className="text-xl sm:text-2xl font-black text-sky-700 dark:text-sky-300 flex items-center justify-between">
+              <span>{groupAvgAttendance}%</span>
+              <span className="text-xs bg-sky-50 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 px-2 py-0.5 rounded-md font-bold">نسبة انضباط</span>
+            </div>
+          </div>
+
+          <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-2xs space-y-1">
+            <div className="text-xs text-slate-500 dark:text-slate-400 font-sans">طلاب بإنذار غياب (≥3 غيابات)</div>
+            <div className="text-xl sm:text-2xl font-black text-rose-600 dark:text-rose-400 flex items-center justify-between">
+              <span>{warningAbsenceCount}</span>
+              {warningAbsenceCount > 0 ? (
+                <span className="text-xs bg-rose-100 text-rose-800 px-2 py-0.5 rounded-md font-black animate-pulse">تنبيه ⚠️</span>
+              ) : (
+                <span className="text-xs bg-emerald-50 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-md font-bold">لا يوجد ✨</span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Filter and Search Bar */}
+        <div className="bg-white dark:bg-slate-800 p-2 sm:p-3 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-2xs flex flex-col gap-3 w-full pb-2 pt-1">
+          <div className="relative w-full">
+            <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={studentSearchTerm}
+              onChange={(e) => setStudentSearchTerm(e.target.value)}
+              placeholder="ابحث باسم الطالب، رقم القيد، أو هاتف ولي الأمر..."
+              className="w-full text-xs font-sans border border-slate-200 dark:border-slate-700 pr-9 pl-3 h-10 rounded-xl focus:outline-hidden focus:border-[#0D5C8C]"
+            />
+          </div>
+
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 w-full no-scrollbar mask-edges">
+            <div className="flex items-center gap-1 text-xs text-slate-600 dark:text-slate-300 font-bold ml-1 shrink-0">
+              <Filter className="w-3.5 h-3.5 text-slate-400" />
+              <span>تصفية النتائج:</span>
+            </div>
+
+            <select
+              value={studentStatusFilter}
+              onChange={(e) => setStudentStatusFilter(e.target.value as any)}
+              className="shrink-0 min-w-max text-xs font-sans border border-slate-200 dark:border-slate-700 px-3 h-10 rounded-xl focus:outline-hidden focus:border-[#0D5C8C] bg-white dark:bg-slate-800 cursor-pointer"
+            >
+              <option value="all">جميع الحالات (نشط وموقوف)</option>
+              <option value="active">الطلاب النشطون فقط</option>
+              <option value="inactive">الطلاب الموقوفون فقط</option>
+            </select>
+
+            <select
+              value={attendanceFilter}
+              onChange={(e) => setAttendanceFilter(e.target.value as any)}
+              className="shrink-0 min-w-max text-xs font-sans border border-slate-200 dark:border-slate-700 px-3 h-10 rounded-xl focus:outline-hidden focus:border-[#0D5C8C] bg-white dark:bg-slate-800 cursor-pointer"
+            >
+              <option value="all">جميع معدلات الحضور</option>
+              <option value="excellent">انضباط ممتاز (≥90%)</option>
+              <option value="warning">إنذار غياب متكرر (≥3 غيابات) ⚠️</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Detailed Student Roster Table */}
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-2xs overflow-hidden">
+          <div className="p-4 bg-slate-50 dark:bg-slate-900/50 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+            <h3 className="font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100 text-sm flex items-center gap-2">
+              <Users className="w-4 h-4 text-[#0D5C8C]" />
+              <span>كشف طلاب المجموعة التفصيلي والبيانات الكاملة ({filteredGroupStudents.length} طالب)</span>
+            </h3>
+            <span className="text-xs text-slate-500 dark:text-slate-400 font-sans">
+              رقم القيد، التواصل، نسبة الحضور، المصروفات والتقرير الشامل
+            </span>
+          </div>
+
+          {filteredGroupStudents.length === 0 ? (
+            <div className="p-12 text-center space-y-3">
+              <div className="w-12 h-12 bg-slate-100 dark:bg-slate-800 text-slate-400 rounded-full flex items-center justify-center mx-auto">
+                <Users className="w-6 h-6" />
+              </div>
+              <p className="text-slate-600 dark:text-slate-300 font-bold text-sm">لا يوجد طلاب مطابقون لمعايير البحث والفلترة بهذه المجموعة.</p>
+              <p className="text-slate-400 text-xs font-sans">يمكنك إضافة طالب جديد مباشرة إلى هذه المجموعة باستخدام الزر بالأعلى.</p>
+            </div>
+          ) : (
+            
+            <>
+              
+              {/* Mobile Card View (responsive) */}
+              <div className="md:hidden divide-y divide-slate-100 dark:divide-slate-700/60 max-h-[75vh] overflow-y-auto">
+                {filteredGroupStudents.map((student) => {
+                  const attStats = getStudentAttendanceStats(student.id);
+                  const feeStats = getStudentFeeStatus(student.id);
+                  const parentPhoneClean = (student.parent_phone || student.phone || '').replace(/[^0-9]/g, '');
+                  const formattedParentPhone = parentPhoneClean.startsWith('0') ? '2' + parentPhoneClean : parentPhoneClean;
+                  
+                  return (
+                    <div key={student.id} className="p-3.5 space-y-3 bg-white dark:bg-slate-800 hover:bg-slate-50/60 dark:hover:bg-slate-800/60 transition-colors">
+                      {/* Top: Name & ID */}
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="font-extrabold text-slate-900 dark:text-slate-50 text-sm flex items-center gap-2 flex-wrap">
+                            <span className="whitespace-nowrap">{student.name}</span>
+                            {attStats.absent >= 3 && (
+                              <span className="inline-flex items-center gap-1 whitespace-nowrap text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 shrink-0">
+                                <AlertTriangle className="w-3 h-3 text-rose-600 dark:text-rose-400 shrink-0" />
+                                <span>غياب متكرر ({attStats.absent})</span>
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span className="text-[10px] font-mono font-bold text-[#0D5C8C] bg-slate-100 dark:bg-slate-700/60 px-1.5 py-0.5 rounded">
+                              #{student.registration_id}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-sans truncate">
+                              الصف: {student.grade_level || selectedClassForStudents.grade_level}
+                            </span>
+                          </div>
+                        </div>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 ${
+                          student.status === 'active' 
+                            ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800'
+                            : 'bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-300 border border-rose-200/60 dark:border-rose-800'
+                        }`}>
+                          {student.status === 'active' ? 'نشط بالسنتر' : 'موقوف'}
+                        </span>
+                      </div>
+
+                      {/* Middle: Attendance & Fees */}
+                      <div className="grid grid-cols-2 gap-2 text-xs bg-slate-50 dark:bg-slate-900/50 p-2 rounded-xl border border-slate-100 dark:border-slate-700/50">
+                        {/* Attendance */}
+                        <div className="space-y-1">
+                          <div className="flex justify-between items-center text-[10px] font-bold">
+                            <span className="text-slate-500">الحضور</span>
+                            <span className={attStats.percentage >= 90 ? 'text-emerald-600' : attStats.percentage >= 75 ? 'text-amber-600' : 'text-rose-600'}>
+                              {attStats.percentage}%
+                            </span>
+                          </div>
+                          <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all ${
+                                attStats.percentage >= 90 ? 'bg-emerald-500' : attStats.percentage >= 75 ? 'bg-amber-500' : 'bg-rose-500'
+                              }`}
+                              style={{ width: `${attStats.percentage}%` }}
+                            />
+                          </div>
+                        </div>
+                        {/* Fees */}
+                        <div className="flex flex-col items-end justify-center">
+                          {feeStats.isPaid ? (
+                            <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-200 dark:border-emerald-800 flex items-center gap-1">
+                              <CheckCircle className="w-3 h-3" />
+                              <span>مسدد ({feeStats.totalAmount})</span>
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-bold text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 px-1.5 py-0.5 rounded border border-rose-200 dark:border-rose-800 flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3" />
+                              <span>مستحق الشهر</span>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Bottom: Contact & Actions */}
+                      <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100 dark:border-slate-700/40">
+                        {student.parent_phone ? (
+                          <div className="flex items-center gap-1.5">
+                            <a
+                              href={`tel:${student.parent_phone}`}
+                              className="flex items-center gap-1 text-[11px] font-mono font-bold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-700/60 px-2 py-1 rounded-lg hover:bg-slate-200 transition-colors"
+                              dir="ltr"
+                            >
+                              <Phone className="w-3 h-3 text-[#0D5C8C]" />
+                              {student.parent_phone}
+                            </a>
+                            {parentPhoneClean.length >= 10 && (
+                              <a
+                                href={`https://wa.me/${formattedParentPhone}?text=${encodeURIComponent(`السلام عليكم ورحمة الله وبركاته،\nإلى ولي أمر: ${student.name}\nتحية طيبة وبعد...`)}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="p-1.5 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 rounded-lg transition-colors"
+                                title="محادثة واتساب"
+                              >
+                                <MessageCircle className="w-3.5 h-3.5" />
+                              </a>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-[10px] text-slate-400">بدون هاتف</span>
+                        )}
+                        
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedStudentForReport(student)}
+                            className="p-1.5 text-sky-600 hover:bg-sky-50 dark:text-sky-400 dark:hover:bg-sky-900/40 rounded-lg transition-colors"
+                            title="عرض الكشف الكامل"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTransferStudent(student);
+                              setTargetClassIdForTransfer('');
+                            }}
+                            className="p-1.5 text-amber-600 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-900/40 rounded-lg transition-colors"
+                            title="نقل لمجموعة أخرى"
+                          >
+                            <RefreshCw className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingStudent(student)}
+                            className="p-1.5 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/40 rounded-lg transition-colors"
+                            title="تعديل البيانات"
+                          >
+                            <Edit className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              samsDb.softDeleteStudent(student.id);
+                              loadData();
+                              setSuccessText(`تم نقل (${student.name}) إلى الأرشيف بنجاح.`);
+                            }}
+                            className="p-1.5 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/40 rounded-lg transition-colors"
+                            title="نقل إلى الأرشيف"
+                          >
+                            <Archive className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Desktop Table View */}
+
+              <div className="hidden md:block overflow-x-auto max-h-[75vh] overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-700 shadow-xs mask-edges">
+
+              <table className="w-full text-right border-collapse min-w-[900px] relative">
+                <thead className="sticky top-0 z-20 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-black border-b-2 border-slate-200 dark:border-slate-700 shadow-xs">
+                  <tr>
+                    <th className="p-3.5 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">رقم القيد</th>
+                    <th className="p-3.5 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 min-w-[200px] whitespace-nowrap">اسم الطالب</th>
+                    <th className="p-3.5 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">الهاتف وولي الأمر</th>
+                    <th className="p-3.5 text-center bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">إحصائيات الحضور %</th>
+                    <th className="p-3.5 text-center bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">الموقف المالي والرسوم</th>
+                    <th className="p-3.5 text-center bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">حالة القيد</th>
+                    <th className="p-3.5 text-center bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 whitespace-nowrap">العمليات والإجراءات</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-xs font-sans text-slate-700 dark:text-slate-200">
+                  {filteredGroupStudents.map((student) => {
+                    const attStats = getStudentAttendanceStats(student.id);
+                    const feeStats = getStudentFeeStatus(student.id);
+                    const parentPhoneClean = (student.parent_phone || student.phone || '').replace(/[^0-9]/g, '');
+                    const formattedParentPhone = parentPhoneClean.startsWith('0') ? '2' + parentPhoneClean : parentPhoneClean;
+
+                    return (
+                      <tr key={student.id} className="hover:bg-sky-50/40 dark:hover:bg-slate-800/50 transition-colors">
+                        {/* Registration ID */}
+                        <td className="p-3.5 font-bold font-mono text-[#0D5C8C]">
+                          {student.registration_id}
+                        </td>
+
+                        {/* Student Name */}
+                        <td className="p-3.5 min-w-[200px]">
+                          <div className="font-extrabold text-slate-900 dark:text-slate-50 text-sm flex items-center gap-2 flex-wrap">
+                            <span className="whitespace-nowrap">{student.name}</span>
+                            {attStats.absent >= 3 && (
+                              <span className="inline-flex items-center gap-1 whitespace-nowrap text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 shrink-0">
+                                <AlertTriangle className="w-3 h-3 text-rose-600 dark:text-rose-400 shrink-0" />
+                                <span>غياب متكرر ({attStats.absent})</span>
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-400 font-sans mt-0.5">
+                            الصف: {student.grade_level || selectedClassForStudents.grade_level}
+                          </div>
+                        </td>
+
+                        {/* Phone Contacts */}
+                        <td className="p-3.5">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2 text-xs text-slate-800 dark:text-slate-100 dark:text-slate-100 font-bold">
+                              <span>ولي الأمر: {student.parent_name || 'غير مدخل'}</span>
+                            </div>
+                            <div className="flex items-center gap-3 text-[11px] text-slate-500 dark:text-slate-400 font-mono dir-ltr justify-end">
+                              {student.parent_phone ? (
+                                <a
+                                  href={`https://wa.me/${formattedParentPhone}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-emerald-700 dark:text-emerald-300 hover:text-emerald-800 font-bold bg-emerald-50 dark:bg-emerald-900/40 px-2 py-0.5 rounded-md flex items-center gap-1 cursor-pointer"
+                                  title="محادثة واتساب ولي الأمر"
+                                >
+                                  <MessageCircle className="w-3 h-3 fill-current" />
+                                  <span>{student.parent_phone}</span>
+                                </a>
+                              ) : (
+                                <span>لا يوجد هاتف</span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Attendance Progress */}
+                        <td className="p-3.5 text-center min-w-[150px]">
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between text-[11px] font-bold">
+                              <span className="text-slate-600 dark:text-slate-300">حضور: {attStats.present} | غياب: {attStats.absent}</span>
+                              <span className={attStats.percentage >= 90 ? 'text-emerald-600 font-black' : attStats.percentage >= 75 ? 'text-amber-600 font-bold' : 'text-rose-600 font-black'}>
+                                {attStats.percentage}%
+                              </span>
+                            </div>
+                            <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                              <div
+                                className={`h-full rounded-full transition-all ${
+                                  attStats.percentage >= 90 ? 'bg-emerald-500' : attStats.percentage >= 75 ? 'bg-amber-500' : 'bg-rose-500'
+                                }`}
+                                style={{ width: `${attStats.percentage}%` }}
+                              />
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Fee & Months Detailed Status */}
+                        <td className="p-3.5 text-center min-w-[200px]">
+                          <div className="space-y-1.5 flex flex-col items-center">
+                            {/* Monthly Cards Row */}
+                            <div className="flex items-center gap-1 flex-wrap justify-center">
+                              {feeStats.monthlyStatus?.map(m => (
+                                <span
+                                  key={m.month}
+                                  title={m.isPaid ? `${m.month}: تم السداد (${m.amount} ج.م) ✓` : `${m.month}: غير مدفوع ✗`}
+                                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-black border transition-all ${
+                                    m.isPaid
+                                      ? 'bg-emerald-100 text-emerald-950 border-emerald-300 dark:bg-emerald-950/90 dark:text-emerald-300 dark:border-emerald-700 shadow-2xs'
+                                      : m.isCurrent
+                                      ? 'bg-amber-100 text-amber-950 border-amber-300 dark:bg-amber-950/90 dark:text-amber-300 dark:border-amber-700 shadow-2xs'
+                                      : 'bg-rose-100 text-rose-950 border-rose-300 dark:bg-rose-950/90 dark:text-rose-300 dark:border-rose-800 shadow-2xs'
+                                  }`}
+                                >
+                                  <span>{m.monthName}</span>
+                                  {m.isPaid ? (
+                                    <Check className="w-3 h-3 text-emerald-700 dark:text-emerald-400 stroke-[3]" />
+                                  ) : (
+                                    <X className="w-3 h-3 text-rose-700 dark:text-rose-400 stroke-[3]" />
+                                  )}
+                                </span>
+                              ))}
+                            </div>
+                            
+                            {/* Current Month State Tag */}
+                            {feeStats.isPaid ? (
+                              <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 px-2.5 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800 flex items-center gap-1">
+                                <CheckCircle className="w-3 h-3 text-emerald-600" />
+                                <span>مسدد أغسطس ({feeStats.totalAmount} ج.م)</span>
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-bold text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 px-2.5 py-0.5 rounded-full border border-rose-200 dark:border-rose-800 flex items-center gap-1">
+                                <AlertTriangle className="w-3 h-3 text-rose-600" />
+                                <span>مستحق لشهر أغسطس</span>
+                              </span>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* Status */}
+                        <td className="p-3.5 text-center">
+                          <span className={`inline-block px-2.5 py-1 rounded-xl text-xs font-bold ${
+                            student.status === 'active' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                          }`}>
+                            {student.status === 'active' ? 'نشط بالسنتر' : 'موقوف'}
+                          </span>
+                        </td>
+
+                        {/* Actions */}
+                        <td className="p-3.5 text-center">
+                          <div className="flex items-center justify-center gap-1.5">
+                            {/* Full Report */}
+                            <button
+                              type="button"
+                              onClick={() => setSelectedStudentForReport(student)}
+                              className="p-2 bg-sky-50 dark:bg-sky-900/40 hover:bg-sky-100 text-[#0D5C8C] rounded-xl font-bold text-xs flex items-center gap-1 transition-transform active:scale-95 cursor-pointer border border-sky-200"
+                              title="عرض الكشف والتاريخ الأكاديمي الكامل"
+                            >
+                              <Eye className="w-3.5 h-3.5 text-[#0D5C8C]" />
+                              <span>كشف كامل</span>
+                            </button>
+
+                            {/* WhatsApp Direct */}
+                            {student.parent_phone && (
+                              <a
+                                href={`https://wa.me/${formattedParentPhone}?text=${encodeURIComponent(`السلام عليكم ورحمة الله وبركاته،\nإلى ولي أمر: ${student.name}\nتحية طيبة وبعد من ${typeof window !== 'undefined' && localStorage.getItem('sams_active_system') === 'alsafa' ? 'سيستم الصفا للمواد الشرعية' : 'سنتر الدكتور في اللغة العربية'}...\n\n${typeof window !== 'undefined' && localStorage.getItem('sams_active_system') === 'alsafa' ? '#سيستم الصفا للمواد الشرعية' : '#سيستم الدكتور في اللغة العربية'}`)}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="p-2 bg-emerald-50 dark:bg-emerald-900/40 hover:bg-emerald-100 text-emerald-700 dark:text-emerald-300 rounded-xl transition-transform active:scale-95 cursor-pointer border border-emerald-200 dark:border-emerald-700"
+                                title="تواصل مباشر عبر الواتساب"
+                              >
+                                <MessageCircle className="w-3.5 h-3.5 fill-current" />
+                              </a>
+                            )}
+
+                            {/* Transfer Group */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setTransferStudent(student);
+                                setTargetClassIdForTransfer('');
+                              }}
+                              className="p-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-200 rounded-xl transition-transform active:scale-95 cursor-pointer"
+                              title="نقل إلى مجموعة أخرى"
+                            >
+                              <RefreshCw className="w-3.5 h-3.5" />
+                            </button>
+
+                            {/* Edit Student */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingStudent(student);
+                              }}
+                              className="p-2 bg-amber-50 dark:bg-amber-900/40 hover:bg-amber-100 text-amber-700 dark:text-amber-300 rounded-xl transition-transform active:scale-95 cursor-pointer border border-amber-200 dark:border-amber-700"
+                              title="تعديل البيانات"
+                            >
+                              <Edit className="w-3.5 h-3.5" />
+                            </button>
+
+                            {/* Archive Student */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                samsDb.softDeleteStudent(student.id);
+                                loadData();
+                                setSuccessText(`تم نقل (${student.name}) إلى الأرشيف بنجاح.`);
+                              }}
+                              className="p-2 bg-amber-50 dark:bg-amber-900/40 hover:bg-amber-100 text-amber-800 dark:text-amber-300 rounded-xl font-bold text-xs flex items-center gap-1 transition-transform active:scale-95 cursor-pointer border border-amber-200 dark:border-amber-700"
+                              title="نقل إلى الأرشيف"
+                            >
+                              <Archive className="w-3.5 h-3.5 text-amber-700 dark:text-amber-300" />
+                              <span>أرشفة</span>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              </div>
+            </>
+          )}
+        </div>
+
+        
+
+        {/* Add Student directly to this Group Modal */}
+        <AnimatePresence>
+          {showAddStudentModal && (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50" dir="rtl">
+              <motion.div
+                initial={{ scale: 0.95, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.95, opacity: 0 }}
+                className="bg-white dark:bg-slate-800 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-2xl max-w-lg w-full overflow-hidden"
+              >
+                <div className="p-4 sm:p-5 bg-[#0D5C8C] text-white flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <UserPlus className="w-5 h-5 text-amber-300" />
+                    <h3 className="font-extrabold text-sm sm:text-base">تسجيل طالب / طالبة بمجموعة: {selectedClassForStudents.name}</h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddStudentModal(false)}
+                    className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center text-sm font-bold cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!newStudentForm.name) return;
+
+                    const parentPhoneErr = validateEgyptianPhone(newStudentForm.parent_phone, 'هاتف ولي الأمر', true);
+                    if (parentPhoneErr) {
+                      setErrorText(parentPhoneErr);
+                      return;
+                    }
+                    const studentPhoneErr = validateEgyptianPhone(newStudentForm.phone, 'هاتف الطالب/ة', false);
+                    if (studentPhoneErr) {
+                      setErrorText(studentPhoneErr);
+                      return;
+                    }
+
+                    const cleanPhone = normalizePhoneDigits(newStudentForm.phone);
+                    const cleanParentPhone = normalizePhoneDigits(newStudentForm.parent_phone);
+
+                    const finalParentName = newStudentForm.parent_name.trim() || deriveParentName(newStudentForm.name);
+                    const detectedGender = newStudentForm.gender || (isFemaleName(newStudentForm.name) ? 'female' : 'male');
+                    const res = samsDb.addStudent({
+                      name: newStudentForm.name,
+                      gender: detectedGender,
+                      class_id: selectedClassForStudents.id,
+                      grade_level: selectedClassForStudents.grade_level || newStudentForm.grade_level,
+                      education_type: selectedClassForStudents.education_type || 'عام',
+                      birth_date: newStudentForm.birth_date,
+                      phone: cleanPhone,
+                      parent_name: finalParentName,
+                      parent_phone: cleanParentPhone,
+                      status: newStudentForm.status
+                    });
+                    if (res.success && res.student) {
+                      const title = getStudentTitle(res.student.name, res.student.gender);
+                      setSuccessText(`تمت إضافة ${title} (${res.student.name}) برقم قيد (${res.student.registration_id}) وولى أمره (${res.student.parent_name}) بنجاح!`);
+                      setShowAddStudentModal(false);
+                      loadData();
+                    } else {
+                      setErrorText(res.error || 'حدث خطأ أثناء الإضافة.');
+                    }
+                  }}
+                  className="p-4 sm:p-6 space-y-4 text-right"
+                >
+                  {errorText && (
+                    <div className="p-3 bg-rose-50 dark:bg-rose-900/40 border border-rose-200 dark:border-rose-700 text-rose-700 dark:text-rose-300 rounded-xl flex items-center gap-2 text-xs font-bold">
+                      <ShieldAlert className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
+                      <span>{errorText}</span>
+                    </div>
+                  )}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">الاسم الرباعي <span className="text-rose-500">*</span></label>
+                    <input
+                      type="text"
+                      required
+                      value={newStudentForm.name}
+                      onChange={(e) => {
+                        const name = e.target.value;
+                        const autoGender = isFemaleName(name) ? 'female' : 'male';
+                        setNewStudentForm({
+                          ...newStudentForm,
+                          name,
+                          gender: newStudentForm.gender !== undefined ? newStudentForm.gender : (name.trim() ? autoGender : undefined)
+                        });
+                      }}
+                      className="w-full min-w-[200px] max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl focus:outline-hidden focus:border-[#0D5C8C]"
+                      placeholder="أدخل الاسم الرباعي للطالب أو الطالبة..."
+                    />
+                  </div>
+
+                  {/* Gender Selector */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">النوع / الجنس</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setNewStudentForm({ ...newStudentForm, gender: 'male' })}
+                        className={`p-2 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                          (newStudentForm.gender === 'male' || (!newStudentForm.gender && !isFemaleName(newStudentForm.name)))
+                            ? 'bg-sky-50 dark:bg-sky-950/60 border-[#0D5C8C] text-[#0D5C8C] dark:text-sky-300 shadow-xs'
+                            : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
+                        }`}
+                      >
+                        <span>👦 طالب (ذكر)</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setNewStudentForm({ ...newStudentForm, gender: 'female' })}
+                        className={`p-2 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                          (newStudentForm.gender === 'female' || (!newStudentForm.gender && isFemaleName(newStudentForm.name)))
+                            ? 'bg-pink-50 dark:bg-pink-950/60 border-pink-500 text-pink-600 dark:text-pink-300 shadow-xs'
+                            : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
+                        }`}
+                      >
+                        <span>👧 طالبة (أنثى)</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">الهاتف الشخصي <span className="text-slate-400 font-normal text-[10px]">(اختياري)</span></label>
+                      <input
+                        type="text"
+                        value={newStudentForm.phone}
+                        onChange={(e) => setNewStudentForm({ ...newStudentForm, phone: normalizePhoneDigits(e.target.value) })}
+                        className="w-full min-w-[200px] max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl focus:outline-hidden focus:border-[#0D5C8C]"
+                        placeholder="مثال: 01012345678"
+                        dir="auto"
+                      />
+                      {newStudentForm.phone !== 'لا يوجد' && (
+                        <div className="mt-1.5 flex items-start gap-1.5 p-2 bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700/50 rounded-lg">
+                          <Info className="w-3 h-3 text-slate-400 mt-0.5 shrink-0" />
+                          <p className="text-[10px] text-slate-500 leading-relaxed">
+                            إذا كان الرقم غير متاح، اضغط <button type="button" onClick={() => setNewStudentForm(prev => ({ ...prev, phone: 'لا يوجد' }))} className="font-bold text-[#0D5C8C] dark:text-sky-400 hover:underline">هنا</button> لتسجيله كـ "لا يوجد"
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">هاتف ولي الأمر <span className="text-rose-500">*</span></label>
+                      <input
+                        type="text"
+                        required
+                        value={newStudentForm.parent_phone}
+                        onChange={(e) => setNewStudentForm({ ...newStudentForm, parent_phone: normalizePhoneDigits(e.target.value) })}
+                        className="w-full min-w-[200px] max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl focus:outline-hidden focus:border-[#0D5C8C]"
+                        placeholder="مثال: 01012345678"
+                        dir="auto"
+                      />
+                      {newStudentForm.parent_phone !== 'لا يوجد' && (
+                        <div className="mt-1.5 flex items-start gap-1.5 p-2 bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700/50 rounded-lg">
+                          <Info className="w-3 h-3 text-slate-400 mt-0.5 shrink-0" />
+                          <p className="text-[10px] text-slate-500 leading-relaxed">
+                            إذا كان الرقم غير متاح، اضغط <button type="button" onClick={() => setNewStudentForm(prev => ({ ...prev, parent_phone: 'لا يوجد' }))} className="font-bold text-[#0D5C8C] dark:text-sky-400 hover:underline cursor-pointer">هنا</button> لتسجيله كـ "لا يوجد"
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">
+                      اسم ولي الأمر <span className="text-slate-400 font-normal">(يُستخرج أوتوماتيكياً إذا تُرك فارغاً)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={newStudentForm.parent_name}
+                      onChange={(e) => setNewStudentForm({ ...newStudentForm, parent_name: e.target.value })}
+                      className="w-full min-w-[200px] max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl focus:outline-hidden focus:border-[#0D5C8C]"
+                      placeholder={newStudentForm.name.trim() ? `تلقائياً: ${deriveParentName(newStudentForm.name)}` : "أدخل اسم ولي الأمر..."}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => setShowAddStudentModal(false)}
+                      className="px-4 py-2 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-bold cursor-pointer"
+                    >
+                      إلغاء
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-5 py-2 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white rounded-xl text-xs font-bold cursor-pointer"
+                    >
+                      حفظ وتسجيل الحساب
+                    </button>
+                  </div>
+                </form>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Edit Student Modal */}
+        <AnimatePresence>
+          {editingStudent && (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50" dir="rtl">
+              <motion.div
+                initial={{ scale: 0.95, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.95, opacity: 0 }}
+                className="bg-white dark:bg-slate-800 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-2xl max-w-lg w-full overflow-hidden"
+              >
+                <div className="p-4 sm:p-5 bg-amber-600 text-white flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Edit className="w-5 h-5 text-white" />
+                    <h3 className="font-extrabold text-sm sm:text-base">
+                      تعديل بيانات {getStudentTitle(editingStudent.name, editingStudent.gender)}: {editingStudent.name}
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setEditingStudent(null)}
+                    className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center text-sm font-bold cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!editingStudent) return;
+
+                    const parentPhoneErr = validateEgyptianPhone(editingStudent.parent_phone || '', 'هاتف ولي الأمر', true);
+                    if (parentPhoneErr) {
+                      setErrorText(parentPhoneErr);
+                      return;
+                    }
+                    const studentPhoneErr = validateEgyptianPhone(editingStudent.phone || '', 'هاتف الطالب/ة', false);
+                    if (studentPhoneErr) {
+                      setErrorText(studentPhoneErr);
+                      return;
+                    }
+
+                    const updatedStudent = {
+                      ...editingStudent,
+                      phone: normalizePhoneDigits(editingStudent.phone || ''),
+                      parent_phone: normalizePhoneDigits(editingStudent.parent_phone || '')
+                    };
+
+                    const res = samsDb.updateStudent(updatedStudent);
+                    if (res.success) {
+                      const title = getStudentTitle(editingStudent.name, editingStudent.gender);
+                      setSuccessText(`تم تعديل بيانات ${title} (${editingStudent.name}) بنجاح.`);
+                      setEditingStudent(null);
+                      loadData();
+                    } else {
+                      setErrorText(res.error || 'فشل تعديل البيانات.');
+                    }
+                  }}
+                  className="p-4 sm:p-6 space-y-4 text-right"
+                >
+                  {errorText && (
+                    <div className="p-3 bg-rose-50 dark:bg-rose-900/40 border border-rose-200 dark:border-rose-700 text-rose-700 dark:text-rose-300 rounded-xl flex items-center gap-2 text-xs font-bold">
+                      <ShieldAlert className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
+                      <span>{errorText}</span>
+                    </div>
+                  )}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">الاسم الرباعي <span className="text-rose-500">*</span></label>
+                    <input
+                      type="text"
+                      required
+                      value={editingStudent.name}
+                      onChange={(e) => {
+                        const name = e.target.value;
+                        setEditingStudent({ ...editingStudent, name });
+                      }}
+                      className="w-full min-w-[200px] max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl focus:outline-hidden focus:border-amber-600"
+                    />
+                  </div>
+
+                  {/* Gender Selector in Edit Modal */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">النوع / الجنس</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditingStudent({ ...editingStudent, gender: 'male' })}
+                        className={`p-2 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                          getStudentGender(editingStudent.name, editingStudent.gender) === 'male'
+                            ? 'bg-sky-50 dark:bg-sky-950/60 border-[#0D5C8C] text-[#0D5C8C] dark:text-sky-300 shadow-xs'
+                            : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
+                        }`}
+                      >
+                        <span>👦 طالب (ذكر)</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingStudent({ ...editingStudent, gender: 'female' })}
+                        className={`p-2 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                          getStudentGender(editingStudent.name, editingStudent.gender) === 'female'
+                            ? 'bg-pink-50 dark:bg-pink-950/60 border-pink-500 text-pink-600 dark:text-pink-300 shadow-xs'
+                            : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
+                        }`}
+                      >
+                        <span>👧 طالبة (أنثى)</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">هاتف الطالب/ة <span className="text-slate-400 font-normal text-[10px]">(اختياري)</span></label>
+                        <button type="button" onClick={() => setEditingStudent(prev => prev ? ({ ...prev, phone: 'لا يوجد' }) : null)} className="text-[10px] font-bold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/60 hover:bg-amber-100 px-1.5 py-0.5 rounded border border-amber-200/80 dark:border-amber-800/80 transition-colors">لا يوجد</button>
+                      </div>
+                      <input
+                        type="text"
+                        value={editingStudent.phone || ''}
+                        onChange={(e) => setEditingStudent({ ...editingStudent, phone: normalizePhoneDigits(e.target.value) })}
+                        className="w-full min-w-[200px] max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl focus:outline-hidden focus:border-amber-600"
+                        placeholder="مثال: 01012345678"
+                        dir="auto"
+                      />
+                      {editingStudent.phone !== 'لا يوجد' && (
+                        <div className="mt-1.5 flex items-start gap-1.5 p-2 bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700/50 rounded-lg">
+                          <Info className="w-3 h-3 text-slate-400 mt-0.5 shrink-0" />
+                          <p className="text-[10px] text-slate-500 leading-relaxed">
+                            إذا كان الرقم غير متاح، اضغط <button type="button" onClick={() => setEditingStudent(prev => prev ? ({ ...prev, phone: 'لا يوجد' }) : null)} className="font-bold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer">هنا</button> لتسجيله كـ "لا يوجد"
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">هاتف ولي الأمر <span className="text-rose-500">*</span></label>
+                        <button type="button" onClick={() => setEditingStudent(prev => prev ? ({ ...prev, parent_phone: 'لا يوجد' }) : null)} className="text-[10px] font-bold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/60 hover:bg-amber-100 px-1.5 py-0.5 rounded border border-amber-200/80 dark:border-amber-800/80 transition-colors">لا يوجد</button>
+                      </div>
+                      <input
+                        type="text"
+                        required
+                        value={editingStudent.parent_phone || ''}
+                        onChange={(e) => setEditingStudent({ ...editingStudent, parent_phone: normalizePhoneDigits(e.target.value) })}
+                        className="w-full min-w-[200px] max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl focus:outline-hidden focus:border-amber-600"
+                        placeholder="مثال: 01012345678"
+                        dir="auto"
+                      />
+                      {editingStudent.parent_phone !== 'لا يوجد' && (
+                        <div className="mt-1.5 flex items-start gap-1.5 p-2 bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700/50 rounded-lg">
+                          <Info className="w-3 h-3 text-slate-400 mt-0.5 shrink-0" />
+                          <p className="text-[10px] text-slate-500 leading-relaxed">
+                            إذا كان الرقم غير متاح، اضغط <button type="button" onClick={() => setEditingStudent(prev => prev ? ({ ...prev, parent_phone: 'لا يوجد' }) : null)} className="font-bold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer">هنا</button> لتسجيله كـ "لا يوجد"
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">اسم ولي الأمر</label>
+                    <input
+                      type="text"
+                      value={editingStudent.parent_name || ''}
+                      onChange={(e) => setEditingStudent({ ...editingStudent, parent_name: e.target.value })}
+                      className="w-full min-w-[200px] max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl focus:outline-hidden focus:border-amber-600"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">حالة القيد</label>
+                    <select
+                      value={editingStudent.status}
+                      onChange={(e) => setEditingStudent({ ...editingStudent, status: e.target.value as any })}
+                      className="w-full min-w-[200px] max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl focus:outline-hidden focus:border-amber-600 bg-white dark:bg-slate-800"
+                    >
+                      <option value="active">نشط بالسنتر</option>
+                      <option value="inactive">موقوف</option>
+                    </select>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => setEditingStudent(null)}
+                      className="px-4 py-2 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-bold cursor-pointer"
+                    >
+                      إلغاء
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-5 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold cursor-pointer"
+                    >
+                      حفظ التغييرات
+                    </button>
+                  </div>
+                </form>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Transfer Group Modal */}
+        <AnimatePresence>
+          {transferStudent && (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50" dir="rtl">
+              <motion.div
+                initial={{ scale: 0.95, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.95, opacity: 0 }}
+                className="bg-white dark:bg-slate-800 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-2xl max-w-md w-full overflow-hidden"
+              >
+                <div className="p-4 sm:p-5 bg-sky-700 text-white flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <RefreshCw className="w-5 h-5 text-white" />
+                    <h3 className="font-extrabold text-sm sm:text-base">
+                      نقل {getStudentTitle(transferStudent.name, transferStudent.gender)} لمجموعة أخرى
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setTransferStudent(null)}
+                    className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center text-sm font-bold cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="p-4 sm:p-6 space-y-4 text-right">
+                  <p className="text-xs text-slate-600 dark:text-slate-300 font-sans">
+                    اختر المجموعة الدراسية الجديدة لنقل {getStudentTitle(transferStudent.name, transferStudent.gender)} <strong className="text-slate-900 dark:text-slate-50 font-extrabold">({transferStudent.name})</strong> إليها:
+                  </p>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">المجموعة الجديدة المستهدفة <span className="text-rose-500">*</span></label>
+                    <select
+                      value={targetClassIdForTransfer}
+                      onChange={(e) => setTargetClassIdForTransfer(e.target.value)}
+                      className="w-full min-w-[200px] max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl focus:outline-hidden focus:border-sky-600 bg-white dark:bg-slate-800"
+                    >
+                      <option value="">-- اختر مجموعة من القائمة --</option>
+                      {classes.filter(c => c.id !== selectedClassForStudents.id).map(cls => (
+                        <option key={cls.id} value={cls.id}>
+                          {cls.name} ({cls.grade_level} - {cls.education_type || 'عام'}) - {cls.schedule_days}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => setTransferStudent(null)}
+                      className="px-4 py-2 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-bold cursor-pointer"
+                    >
+                      إلغاء
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!targetClassIdForTransfer}
+                      onClick={() => {
+                        const updated = { ...transferStudent, class_id: targetClassIdForTransfer };
+                        const res = samsDb.updateStudent(updated);
+                        if (res.success) {
+                          const targetGroup = classes.find(c => c.id === targetClassIdForTransfer);
+                          const title = getStudentTitle(transferStudent.name, transferStudent.gender);
+                          setSuccessText(`تم نقل ${title} (${transferStudent.name}) إلى مجموعة (${targetGroup?.name || ''}) بنجاح.`);
+                          setTransferStudent(null);
+                          loadData();
+                        }
+                      }}
+                      className="px-5 py-2 bg-sky-700 hover:bg-sky-800 disabled:opacity-50 text-white rounded-xl text-xs font-bold cursor-pointer"
+                    >
+                      تأكيد نقل المجموعة
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Broadcast WhatsApp Modal */}
+        <AnimatePresence>
+          {showGroupWhatsAppModal && (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50" dir="rtl">
+              <motion.div
+                initial={{ scale: 0.95, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.95, opacity: 0 }}
+                className="bg-white dark:bg-slate-800 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-2xl max-w-lg w-full overflow-hidden"
+              >
+                <div className="p-4 sm:p-5 bg-emerald-600 text-white flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <MessageCircle className="w-5 h-5 text-white fill-current" />
+                    <h3 className="font-extrabold text-sm sm:text-base">إرسال رسالة واتساب جماعية لأولياء أمور المجموعة</h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowGroupWhatsAppModal(false)}
+                    className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center text-sm font-bold cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="p-4 sm:p-6 space-y-4 text-right">
+                  <p className="text-xs text-slate-600 dark:text-slate-300 font-sans">
+                    سيتم توجيه الرسالة لأولياء أمور كافة الطلاب بالمجموعة ({currentClassStudents.length} طالب):
+                  </p>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">نص الرسالة الجماعية:</label>
+                    <textarea
+                      rows={6}
+                      value={groupWhatsAppMsg}
+                      onChange={(e) => setGroupWhatsAppMsg(e.target.value)}
+                      className="w-full min-w-[200px] max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-3 rounded-2xl focus:outline-hidden focus:border-emerald-600 leading-relaxed"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => setShowGroupWhatsAppModal(false)}
+                      className="px-4 py-2 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-bold cursor-pointer"
+                    >
+                      إلغاء
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const firstStudentWithPhone = currentClassStudents.find(s => s.parent_phone || s.phone);
+                        if (firstStudentWithPhone) {
+                          const cleanP = (firstStudentWithPhone.parent_phone || firstStudentWithPhone.phone || '').replace(/[^0-9]/g, '');
+                          const formatted = cleanP.startsWith('0') ? '2' + cleanP : cleanP;
+                          window.open(`https://wa.me/${formatted}?text=${encodeURIComponent(groupWhatsAppMsg)}`, '_blank');
+                          setSuccessText(`تم فتح الواتساب لبدء المراسلة الجماعية لأولياء الأمور.`);
+                          setShowGroupWhatsAppModal(false);
+                        } else {
+                          setErrorText('لا توجد أرقام هواتف مسجلة لأولياء أمور هذه المجموعة.');
+                        }
+                      }}
+                      className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <MessageCircle className="w-4 h-4 fill-current" />
+                      <span>فتح محادثات الواتساب 📱</span>
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+                {/* Permanent Delete Confirmation Modal */}
+        <AnimatePresence>
+          {archivedStudentToPermanentDelete && (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-[60] animate-fade-in" dir="rtl">
+              <motion.div
+                initial={{ scale: 0.95, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.95, opacity: 0 }}
+                className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-xl max-w-md w-full p-4 sm:p-6 text-right space-y-4"
+              >
+                <div className="flex items-center gap-3 text-red-600 dark:text-red-400">
+                  <div className="w-10 h-10 bg-red-50 dark:bg-red-900/40 rounded-full flex items-center justify-center shrink-0">
+                    <Trash2 className="w-5 h-5 text-red-600 dark:text-red-400" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-950 text-sm">تأكيد الحذف النهائي من النظام</h3>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 font-sans">حذف دائم لا يمكن التراجع عنه بأي حال</p>
+                  </div>
+                </div>
+
+                <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed font-sans bg-rose-50/50 p-3.5 rounded-xl border border-rose-100 dark:border-rose-800">
+                  هل أنت متأكد تماماً من الحذف النهائي للطالب <strong className="text-rose-700 dark:text-rose-300">"{archivedStudentToPermanentDelete.name}"</strong>؟ سيتم مسح ملفه وكافة سجلاته نهائياً من قاعدة البيانات.
+                </p>
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-50">
+                  <button
+                    type="button"
+                    onClick={() => setArchivedStudentToPermanentDelete(null)}
+                    className="px-4 py-2 border border-gray-200 dark:border-gray-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-lg text-xs font-bold cursor-pointer"
+                  >
+                    إلغاء
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleProcessAction("جاري الحذف النهائي...", () => {
+                        samsDb.permanentlyDeleteStudent(archivedStudentToPermanentDelete.id);
+                        setArchivedStudentToPermanentDelete(null);
+                        loadData();
+                        setSuccessText('تم مسح بيانات الطالب نهائياً من قاعدة البيانات.');
+                      });
+                    }}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer"
+                  >
+                    تأكيد الحذف النهائي
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6" id="sams_classes_module">
+
+      {/* Global Processing Progress Overlay */}
+      <AnimatePresence>
+        {isProcessing && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4 no-print print:hidden"
+            dir="rtl"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white dark:bg-slate-800 p-8 rounded-3xl shadow-2xl max-w-sm w-full text-center space-y-6"
+            >
+              <div className="w-16 h-16 bg-amber-50 dark:bg-amber-900/40 rounded-2xl mx-auto flex items-center justify-center">
+                <motion.div
+                  animate={{ rotate: 360 }}
+                  transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+                >
+                  <RefreshCw className="w-8 h-8 text-amber-500" />
+                </motion.div>
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-sm sm:text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100">{processingText}</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 font-sans">يرجى الانتظار، جاري معالجة البيانات...</p>
+              </div>
+              
+              <div className="space-y-2">
+                <div className="h-3 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                  <motion.div 
+                    className="h-full bg-amber-500"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${processingProgress}%` }}
+                    transition={{ duration: 0.2 }}
+                  />
+                </div>
+                <div className="flex justify-between text-xs font-bold text-slate-600 dark:text-slate-300 font-mono">
+                  <span>{processingProgress}%</span>
+                  <span>100%</span>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      
+      {/* Title block */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white dark:bg-slate-800 p-4 sm:p-5 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-2xs">
+        <div>
+          <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100 dark:text-slate-100 flex items-center gap-2">
+            
+            إدارة المجموعات والمقررات والجداول بالسنتر
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">تنسيق المجموعات الدراسية وسعتها الاستيعابية ومواعيدها</p>
+        </div>
+        <button
+          onClick={() => {
+            setShowAddClass(!showAddClass);
+            setErrorText('');
+          }}
+          className="flex items-center gap-2 px-4 py-2.5 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white text-xs font-bold rounded-xl shadow-xs transition-colors shrink-0 cursor-pointer"
+        >
+          <Plus className="w-4 h-4" />
+          <span>{showAddClass ? 'إغلاق النموذج' : 'تأسيس مجموعة جديدة'}</span>
+        </button>
+      </div>
+
+      {/* Error text alert */}
+      {errorText && (
+        <div className="p-4 bg-red-50 dark:bg-red-900/40 border border-red-200 text-[#C0152A] rounded-xl text-xs flex items-center gap-2">
+          <ShieldAlert className="w-4 h-4 text-[#E8192C] shrink-0" />
+          <span className="font-semibold">{errorText}</span>
+        </div>
+      )}
+
+      {/* Success text alert */}
+      {successText && (
+        <div className="p-4 bg-emerald-50 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-700 text-emerald-800 dark:text-emerald-300 rounded-xl text-xs flex items-center gap-2">
+          <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+          <span className="font-semibold">{successText}</span>
+        </div>
+      )}
+
+      {/* Initialize classroom form */}
+      {showAddClass && (
+        <div className="bg-white dark:bg-slate-800 p-4 sm:p-6 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm animate-slide-up">
+          <h3 className="font-bold text-[#0D5C8C] text-sm mb-4 border-b border-gray-50 pb-2">تأسيس مجموعة دراسية جديدة</h3>
+          <form onSubmit={handleCreateClass} className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            
+            <div className="space-y-1">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 font-sans">اسم المجموعة الدراسية <span className="text-rose-500">*</span></label>
+              <input
+                type="text"
+                value={classForm.name}
+                onChange={(e) => setClassForm({ ...classForm, name: e.target.value })}
+                className="w-full min-w-[200px] max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 px-3 py-2.5 rounded-lg focus:outline-hidden focus:border-[#0D5C8C] text-right"
+                placeholder="اسم المجموعة"
+                required
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 font-sans">أيام المجموعة <span className="text-rose-500">*</span></label>
+              <div className="flex flex-wrap gap-1.5">
+                {['السبت', 'الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة'].map(day => (
+                  <label key={day} className="flex items-center gap-1 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 px-2 py-1 rounded-md text-[11px] cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors">
+                    <input 
+                      type="checkbox" 
+                      className="accent-[#0D5C8C]"
+                      checked={(classForm.schedule_days || '').includes(day)}
+                      onChange={(e) => {
+                        const currentDays = classForm.schedule_days ? classForm.schedule_days.split('، ').filter(Boolean) : [];
+                        let updatedDays: string[];
+                        const newTimes = { ...classForm.day_times };
+
+                        if (e.target.checked) {
+                          updatedDays = [...currentDays, day];
+                          if (unifiedTime) {
+                            newTimes[day] = unifiedTime;
+                          }
+                        } else {
+                          updatedDays = currentDays.filter(d => d !== day);
+                          delete newTimes[day];
+                        }
+
+                        setClassForm({ 
+                          ...classForm, 
+                          schedule_days: updatedDays.join('، '),
+                          day_times: newTimes 
+                        });
+                      }}
+                    />
+                    <span className="font-bold text-slate-700 dark:text-slate-200">{day}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-1 md:col-span-2">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 font-sans">أوقات المجموعة للأيام المحددة <span className="text-rose-500">*</span></label>
+              {(() => {
+                const selectedDays = classForm.schedule_days ? classForm.schedule_days.split('، ').filter(Boolean) : [];
+                if (selectedDays.length === 0) {
+                  return (
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400 p-2.5 bg-slate-50 dark:bg-slate-800/50 rounded-lg border border-slate-100 dark:border-slate-700">
+                      الرجاء تحديد أيام المجموعة أولاً...
+                    </div>
+                  );
+                }
+                return (
+                  <div className="flex flex-col gap-2 p-2.5 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-100 dark:border-slate-700">
+                    {selectedDays.length >= 1 && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 bg-sky-50/90 dark:bg-sky-950/50 rounded-xl border border-sky-200/80 dark:border-sky-800/60 mb-1">
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-sky-900 dark:text-sky-200">
+                          <Zap className="w-4 h-4 text-[#0D5C8C] dark:text-sky-400 shrink-0" />
+                          <span>تحديد موعد موحد لجميع الأيام المحددة:</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="time"
+                            value={unifiedTime}
+                            onChange={(e) => {
+                              const timeVal = e.target.value;
+                              setUnifiedTime(timeVal);
+                              if (timeVal) {
+                                const newTimes = { ...classForm.day_times };
+                                selectedDays.forEach(d => {
+                                  newTimes[d] = timeVal;
+                                });
+                                setClassForm(prev => ({ ...prev, day_times: newTimes }));
+                              }
+                            }}
+                            className="text-xs font-sans border border-sky-300 dark:border-sky-700 px-2.5 py-1 rounded-lg focus:outline-hidden focus:border-[#0D5C8C] text-right bg-white dark:bg-slate-900 font-bold text-sky-900 dark:text-sky-100 shadow-xs"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (unifiedTime) {
+                                const newTimes = { ...classForm.day_times };
+                                selectedDays.forEach(d => {
+                                  newTimes[d] = unifiedTime;
+                                });
+                                setClassForm(prev => ({ ...prev, day_times: newTimes }));
+                              }
+                            }}
+                            className="px-3 py-1 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white text-xs font-bold rounded-lg transition-all active:scale-95 cursor-pointer shadow-xs whitespace-nowrap"
+                          >
+                            تطبيق على الكل
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {selectedDays.map(day => (
+                      <div key={day} className="flex items-center gap-3 bg-white dark:bg-slate-900 p-2 rounded-lg border border-slate-100 dark:border-slate-800">
+                        <span className="w-16 text-xs font-bold text-slate-700 dark:text-slate-200">{day}</span>
+                        <input
+                          type="time"
+                          value={classForm.day_times?.[day] || ''}
+                          onChange={(e) => {
+                            setClassForm(prev => ({
+                              ...prev,
+                              day_times: {
+                                ...prev.day_times,
+                                [day]: e.target.value
+                              }
+                            }));
+                          }}
+                          className="flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2 rounded-lg focus:outline-hidden focus:border-[#0D5C8C] text-right bg-white dark:bg-slate-900"
+                          required
+                        />
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+
+            <div className="space-y-1">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 font-sans">الصف الدراسي <span className="text-rose-500">*</span></label>
+              <select
+                value={classForm.grade_level}
+                onChange={(e) => setClassForm({ ...classForm, grade_level: e.target.value })}
+                className="w-full min-w-[200px] max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg focus:outline-hidden focus:border-[#0D5C8C] text-right bg-white dark:bg-slate-800"
+                required
+              >
+                <option value="الأول الإعدادي">الأول الإعدادي</option>
+                <option value="الثاني الإعدادي">الثاني الإعدادي</option>
+                <option value="الثالث الإعدادي">الثالث الإعدادي</option>
+                <option value="الأول الثانوي">الأول الثانوي</option>
+                <option value="الثاني الثانوي">الثاني الثانوي</option>
+                <option value="الثالث الثانوي">الثالث الثانوي</option>
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 font-sans">نوع التعليم <span className="text-rose-500">*</span></label>
+              <select
+                value={classForm.education_type}
+                onChange={(e) => setClassForm({ ...classForm, education_type: e.target.value as 'عام' | 'أزهر' })}
+                className="w-full min-w-[200px] max-w-full flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg focus:outline-hidden focus:border-[#0D5C8C] text-right bg-white dark:bg-slate-800 font-bold"
+                required
+              >
+                <option value="عام">عام</option>
+                <option value="أزهر">أزهر</option>
+              </select>
+            </div>
+
+            <div className="md:col-span-4 flex justify-end gap-2 border-t border-slate-50 dark:border-slate-800 pt-3">
+              <button
+                type="button"
+                onClick={() => setShowAddClass(false)}
+                className="px-4 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800/50 text-slate-600 dark:text-slate-300 font-bold shrink-0 cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white text-xs font-bold rounded-lg shrink-0 cursor-pointer"
+              >
+                تأسيس المجموعة الدراسية
+              </button>
+            </div>
+
+          </form>
+        </div>
+      )}
+
+      {/* Class list Grid cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:p-5">
+        {classes.map((cls, index) => {
+          
+          const currentSubjects = subjects.filter(s => s.class_id === cls.id);
+          const totalHours = currentSubjects.reduce((sum, item) => sum + item.weekly_hours, 0);
+          const isBeingDragged = draggedClassIndex === index;
+          const isDragTarget = dragOverClassIndex === index;
+
+          return (
+            <div
+              key={cls.id}
+              draggable={true}
+              onDragStart={(e) => handleClassCardDragStart(e, index, cls)}
+              onDragOver={(e) => handleClassCardDragOver(e, index)}
+              onDrop={(e) => handleClassCardDrop(e, index)}
+              onDragEnd={() => {
+                setDraggedClassIndex(null);
+                setDragOverClassIndex(null);
+                setDraggedCardClass(null);
+              }}
+              className={`bg-white dark:bg-slate-800 border rounded-2xl p-5 shadow-2xs hover:shadow-md transition-all flex flex-col justify-between h-full relative ${
+                isBeingDragged ? 'opacity-40 scale-95 border-dashed border-[#0D5C8C]' : ''
+              } ${
+                isDragTarget ? 'ring-2 ring-[#0D5C8C] border-[#0D5C8C] bg-sky-50/50 dark:bg-sky-900/20' : 'border-gray-100 dark:border-gray-700'
+              }`}
+              id={`classroom_card_${cls.id}`}
+            >
+              
+              <div className="space-y-4 flex-1">
+                <div className="flex items-center justify-between border-b border-gray-50 dark:border-slate-700/50 pb-3">
+                  <div className="flex items-center gap-1.5 cursor-grab active:cursor-grabbing hover:bg-slate-50 dark:hover:bg-slate-700/50 p-1 rounded-lg transition-colors" title="سحب لتغيير ترتيب المجموعة أو إدراجها بجدول الحصص">
+                    <GripVertical className="w-4.5 h-4.5 text-slate-400 hover:text-[#0D5C8C]" />
+                    <h3 className="font-bold text-slate-800 dark:text-slate-100 text-sm">{cls.name} <span className="text-[10px] text-slate-400 font-normal ml-1">({cls.education_type || 'عام'})</span></h3>
+                    <button
+                      type="button"
+                      onClick={() => startEditingClass(cls)}
+                      className="p-1 text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/40 rounded transition-all cursor-pointer mr-1"
+                      title="تعديل بيانات المجموعة"
+                    >
+                      <Edit className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setClassToDelete(cls)}
+                      className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/40 rounded transition-all cursor-pointer"
+                      title="حذف المجموعة"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-2 py-0.5 rounded font-semibold font-sans">{cls.grade_level}</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded font-bold font-sans border ${
+                      (cls.education_type || 'عام') === 'أزهر'
+                        ? 'bg-amber-50 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                        : 'bg-emerald-50 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                    }`}>
+                      {(cls.education_type || 'عام') === 'أزهر' ? 'أزهر' : 'عام'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Attributes */}
+                <div className="space-y-2.5 text-xs">
+                  
+                  <div className="flex items-center justify-between text-slate-600 dark:text-slate-300">
+                    <span className="flex items-center gap-1.5 font-sans shrink-0">
+                      <Calendar className="w-4 h-4 text-slate-400" />
+                      مواعيد المجموعة
+                    </span>
+                    <span className="font-bold text-slate-800 dark:text-slate-100 text-left mr-2">{cls.schedule_days ? formatScheduleDisplay(cls.schedule_time, cls.schedule_days) : 'ـ لم تحدد بعد ـ'}</span>
+                  </div>
+
+                  <div className="flex items-center justify-between text-slate-600 dark:text-slate-300">
+                    <span className="flex items-center gap-1.5 font-sans">
+                      <User className="w-4 h-4 text-slate-400" />
+                      عدد الطلاب
+                    </span>
+                    <span className="font-bold text-slate-800 dark:text-slate-100">{students.filter(s => s.class_id === cls.id).length} طالب</span>
+                  </div>
+
+                  <div className="flex items-center justify-between text-slate-600 dark:text-slate-300">
+                    <span className="flex items-center gap-1.5 font-sans">
+                      <BookOpen className="w-4 h-4 text-slate-400" />
+                      المحاضرات والمقررات
+                    </span>
+                    <span className="font-bold text-[#0D5C8C]">{currentSubjects.length} مقررات ({totalHours} ساعة/أسبوع)</span>
+                  </div>
+
+                </div>
+              </div>
+
+              {/* Dedicated Group Students Page Trigger Button */}
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-700 flex flex-col gap-2 mt-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedClassForStudents(cls);
+                    setStudentSearchTerm('');
+                    setStudentStatusFilter('all');
+                    setAttendanceFilter('all');
+                  }}
+                  className="w-full py-2.5 px-4 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white font-extrabold text-xs rounded-xl shadow-2xs flex items-center justify-between gap-2 transition-all active:scale-95 cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <Users className="w-4 h-4 text-sky-200" />
+                    <span>عرض طلاب المجموعة</span>
+                  </div>
+                  <span className="bg-white/20 text-white text-[11px] px-2.5 py-0.5 rounded-lg font-black font-sans">
+                    {students.filter(s => s.class_id === cls.id).length} طالب
+                  </span>
+                </button>
+              </div>
+
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Custom Delete Confirmation Modal */}
+      <AnimatePresence>
+        {/* Edit Class Modal */}
+        {editingClass && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in" dir="rtl">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-xl max-w-2xl w-full p-4 sm:p-6 text-right space-y-4 max-h-[90vh] overflow-y-auto"
+            >
+              <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 pb-3">
+                <div className="flex items-center gap-2 text-[#0D5C8C] dark:text-sky-400">
+                  <Edit className="w-5 h-5" />
+                  <h3 className="font-bold text-slate-900 dark:text-slate-100 text-sm">تعديل بيانات المجموعة الدراسية ({editingClass.name})</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingClass(null)}
+                  className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleUpdateClass} className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">اسم المجموعة الدراسية <span className="text-rose-500">*</span></label>
+                    <input
+                      type="text"
+                      value={editClassForm.name}
+                      onChange={(e) => setEditClassForm({ ...editClassForm, name: e.target.value })}
+                      className="w-full text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg focus:outline-hidden focus:border-[#0D5C8C] text-right bg-white dark:bg-slate-900"
+                      required
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">الصف الدراسي <span className="text-rose-500">*</span></label>
+                    <select
+                      value={editClassForm.grade_level}
+                      onChange={(e) => setEditClassForm({ ...editClassForm, grade_level: e.target.value })}
+                      className="w-full text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg focus:outline-hidden focus:border-[#0D5C8C] text-right bg-white dark:bg-slate-900"
+                      required
+                    >
+                      <option value="الأول الإعدادي">الأول الإعدادي</option>
+                      <option value="الثاني الإعدادي">الثاني الإعدادي</option>
+                      <option value="الثالث الإعدادي">الثالث الإعدادي</option>
+                      <option value="الأول الثانوي">الأول الثانوي</option>
+                      <option value="الثاني الثانوي">الثاني الثانوي</option>
+                      <option value="الثالث الثانوي">الثالث الثانوي</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">نوع التعليم <span className="text-rose-500">*</span></label>
+                    <select
+                      value={editClassForm.education_type}
+                      onChange={(e) => setEditClassForm({ ...editClassForm, education_type: e.target.value as 'عام' | 'أزهر' })}
+                      className="w-full text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg focus:outline-hidden focus:border-[#0D5C8C] text-right bg-white dark:bg-slate-900 font-bold"
+                      required
+                    >
+                      <option value="عام">عام</option>
+                      <option value="أزهر">أزهر</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">المواعيد المدونة حالياً</label>
+                    <input
+                      type="text"
+                      value={editClassForm.schedule_time}
+                      onChange={(e) => setEditClassForm({ ...editClassForm, schedule_time: e.target.value })}
+                      className="w-full text-xs font-sans border border-slate-200 dark:border-slate-700 p-2.5 rounded-lg focus:outline-hidden focus:border-[#0D5C8C] text-right bg-white dark:bg-slate-900 font-sans"
+                      placeholder="مثال: السبت - الثلاثاء (4:00 م)"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">أيام المجموعة <span className="text-rose-500">*</span></label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {['السبت', 'الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة'].map(day => (
+                      <label key={day} className="flex items-center gap-1 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 rounded-md text-[11px] cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors">
+                        <input 
+                          type="checkbox" 
+                          className="accent-[#0D5C8C]"
+                          checked={(editClassForm.schedule_days || '').includes(day)}
+                          onChange={(e) => {
+                            const currentDays = editClassForm.schedule_days ? editClassForm.schedule_days.split('، ').filter(Boolean) : [];
+                            let updatedDays: string[];
+                            const newTimes = { ...editClassForm.day_times };
+
+                            if (e.target.checked) {
+                              updatedDays = [...currentDays, day];
+                              if (editUnifiedTime) {
+                                newTimes[day] = editUnifiedTime;
+                              }
+                            } else {
+                              updatedDays = currentDays.filter(d => d !== day);
+                              delete newTimes[day];
+                            }
+
+                            setEditClassForm({ 
+                              ...editClassForm, 
+                              schedule_days: updatedDays.join('، '),
+                              day_times: newTimes 
+                            });
+                          }}
+                        />
+                        <span className="font-bold text-slate-700 dark:text-slate-200">{day}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">تحديث أوقات الأيام المحددة (تحديد موعد جديد)</label>
+                  {(() => {
+                    const selectedDays = editClassForm.schedule_days ? editClassForm.schedule_days.split('، ').filter(Boolean) : [];
+                    if (selectedDays.length === 0) {
+                      return (
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 p-2.5 bg-slate-50 dark:bg-slate-900/50 rounded-lg border border-slate-100 dark:border-slate-700">
+                          حدد أيام المجموعة للتحكم بأوقاتها...
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="flex flex-col gap-2 p-2.5 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-700">
+                        {selectedDays.length >= 1 && (
+                          <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 bg-sky-50/90 dark:bg-sky-950/50 rounded-xl border border-sky-200/80 dark:border-sky-800/60 mb-1">
+                            <div className="flex items-center gap-1.5 text-xs font-bold text-sky-900 dark:text-sky-200">
+                              <Zap className="w-4 h-4 text-[#0D5C8C] dark:text-sky-400 shrink-0" />
+                              <span>تطبيق موعد موحد لكل الأيام:</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="time"
+                                value={editUnifiedTime}
+                                onChange={(e) => {
+                                  const timeVal = e.target.value;
+                                  setEditUnifiedTime(timeVal);
+                                  if (timeVal) {
+                                    const newTimes = { ...editClassForm.day_times };
+                                    selectedDays.forEach(d => {
+                                      newTimes[d] = timeVal;
+                                    });
+                                    setEditClassForm(prev => ({ ...prev, day_times: newTimes }));
+                                  }
+                                }}
+                                className="text-xs font-sans border border-sky-300 dark:border-sky-700 px-2.5 py-1 rounded-lg focus:outline-hidden focus:border-[#0D5C8C] text-right bg-white dark:bg-slate-900 font-bold text-sky-900 dark:text-sky-100 shadow-xs"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (editUnifiedTime) {
+                                    const newTimes = { ...editClassForm.day_times };
+                                    selectedDays.forEach(d => {
+                                      newTimes[d] = editUnifiedTime;
+                                    });
+                                    setEditClassForm(prev => ({ ...prev, day_times: newTimes }));
+                                  }
+                                }}
+                                className="px-3 py-1 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white text-xs font-bold rounded-lg transition-all cursor-pointer shadow-xs whitespace-nowrap"
+                              >
+                                تطبيق على الكل
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {selectedDays.map(day => (
+                          <div key={day} className="flex items-center gap-3 bg-white dark:bg-slate-900 p-2 rounded-lg border border-slate-100 dark:border-slate-800">
+                            <span className="w-16 text-xs font-bold text-slate-700 dark:text-slate-200">{day}</span>
+                            <input
+                              type="time"
+                              value={editClassForm.day_times?.[day] || ''}
+                              onChange={(e) => {
+                                setEditClassForm(prev => ({
+                                  ...prev,
+                                  day_times: {
+                                    ...prev.day_times,
+                                    [day]: e.target.value
+                                  }
+                                }));
+                              }}
+                              className="flex-1 text-xs font-sans border border-slate-200 dark:border-slate-700 p-2 rounded-lg focus:outline-hidden focus:border-[#0D5C8C] text-right bg-white dark:bg-slate-900"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-gray-100 dark:border-gray-700">
+                  <button
+                    type="button"
+                    onClick={() => setEditingClass(null)}
+                    className="px-4 py-2 border border-gray-200 dark:border-gray-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-lg text-xs font-bold cursor-pointer"
+                  >
+                    إلغاء
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2 bg-[#0D5C8C] hover:bg-[#1A7FAA] text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer"
+                  >
+                    حفظ التعديلات
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+
+        {classToDelete && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in" dir="rtl">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-xl max-w-md w-full p-4 sm:p-6 text-right space-y-4"
+            >
+              <div className="flex items-center gap-3 text-red-600 dark:text-red-400">
+                <div className="w-10 h-10 bg-red-50 dark:bg-red-900/40 rounded-full flex items-center justify-center">
+                  <ShieldAlert className="w-5 h-5 text-red-600 dark:text-red-400" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-950 text-sm">تأكيد حذف المجموعة الدراسية</h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-sans">إجراء إداري حساس وغير قابل للتراجع</p>
+                </div>
+              </div>
+
+              <div className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed font-sans space-y-2 py-2 bg-slate-50 dark:bg-slate-900/50 p-3.5 rounded-xl border border-slate-100 dark:border-slate-700">
+                <p>هل أنت متأكد من رغبتك في حذف المجموعة: <strong className="text-red-700 dark:text-red-300">"{classToDelete.name}"</strong>؟</p>
+                <p className="text-[10px] text-slate-400">ملاحظة: سيقوم النظام بالتحقق أولاً من عدم وجود أي طالب مسجل بهذه المجموعة كإجراء وقائي لمنع فقدان البيانات.</p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-50">
+                <button
+                  type="button"
+                  onClick={() => setClassToDelete(null)}
+                  className="px-4 py-2 border border-gray-200 dark:border-gray-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-lg text-xs font-bold cursor-pointer"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmDeleteClass}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer"
+                >
+                  تأكيد الحذف النهائي
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+    </div>
+  );
+}
